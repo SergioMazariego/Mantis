@@ -1,6 +1,6 @@
-<div style="text-align:center;">
-    <img src="Mantis.jpeg" width="200">
-</div>
+<p align="center">
+  <img src="Mantis.jpeg" width="200">
+</p>
 
 # Mantis
 
