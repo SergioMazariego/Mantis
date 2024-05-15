@@ -1,4 +1,6 @@
-![Mantis Logo](Mantis.jpeg){:width="200px"}
+<div style="text-align:center;">
+    <img src="Mantis.jpeg" width="200">
+</div>
 
 # Mantis
 
