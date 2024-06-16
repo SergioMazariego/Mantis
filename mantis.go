@@ -138,7 +138,7 @@ func GetTempFolder(baseDir string) {
 	fmt.Println(string(output))
 }
 
-// Progress bar visible in terminal
+// Progress bar visible in terminal.
 func updateProgress(step, total int) {
 	progress := float64(step) / float64(total) * 100
 	fmt.Printf("\rProgress: [%-50s] %d%%", strings.Repeat("#", int(progress/2)), int(progress))
@@ -201,3 +201,4 @@ func main() {
 
 	fmt.Println("\nAll tasks completed.")
 }
+
