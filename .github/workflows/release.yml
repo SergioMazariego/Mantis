@@ -1,0 +1,52 @@
+name: Build and Release
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Set up Go
+        uses: actions/setup-go@v3
+        with:
+          go-version: 1.16.7
+
+      - name: Build binary
+        run: GOOS=windows GOARCH=amd64 go build -o mantis.exe mantis.go
+
+      - name: Determine release version
+        id: determine_release_version
+        run: echo ::set-output name=release_version::v1.0.${{ github.run_number }}
+
+      - name: Prepare release assets
+        run: |
+          mkdir release
+          mv mantis.exe release/
+
+      - name: Create release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ steps.determine_release_version.outputs.release_version }}
+          release_name: ${{ steps.determine_release_version.outputs.release_version }}
+          draft: false
+          prerelease: false
+
+      - name: Upload release asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: release/mantis.exe
+          asset_name: mantis.exe
+          asset_content_type: application/octet-stream
