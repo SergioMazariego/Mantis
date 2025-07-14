@@ -133,7 +133,7 @@ func ExecCommandLastActivityView(baseDir, artifactsDir string) {
 	}
 
 	// Ejecuta el comando
-	cmd := exec.Command("cmd.exe", "/c", exePath, "/scomma", outputFile)
+	cmd := exec.Command(exePath, "/scomma", outputFile)
 	err = cmd.Run()
 
 	if err != nil {
