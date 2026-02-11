@@ -169,6 +169,21 @@ func GetTempFolder(baseDir string) {
 	exec.Command("cmd.exe", "/c", "xcopy", "C:\\WINDOWS\\Temp", filepath.Join(baseDir, "Artifacts", "Temp"), "/s", "/i").Run()
 }
 
+// Ejecuta diskpart para listar discos.
+func listDisks(baseDir, artifactsDir string) {
+    scriptPath := filepath.Join(baseDir, "diskpart_script.txt")
+    
+    // Create diskpart script
+    err := os.WriteFile(scriptPath, []byte("list disk\nexit\n"), 0644)
+    if err != nil {
+        fmt.Printf("Error creating diskpart script: %v\n", err)
+        return
+    }
+    
+    // Execute with output
+    executeCommand("diskpart", filepath.Join(artifactsDir, "DiskList.txt"), "/s", scriptPath)
+}
+
 // Progress bar in terminal.
 func updateProgress(step, total int) {
 	progress := float64(step) / float64(total) * 100
