@@ -2,6 +2,7 @@ package main
 
 import (
 	"archive/zip"
+	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -169,6 +170,50 @@ func GetTempFolder(baseDir string) {
 	exec.Command("cmd.exe", "/c", "xcopy", "C:\\WINDOWS\\Temp", filepath.Join(baseDir, "Artifacts", "Temp"), "/s", "/i").Run()
 }
 
+func listDisks(baseDir, artifactsDir string) {
+
+	// Crear carpeta de salida si no existe
+	err := os.MkdirAll(artifactsDir, 0755)
+	if err != nil {
+		fmt.Printf("Error creating artifacts dir: %v\n", err)
+		return
+	}
+
+	scriptPath := filepath.Join(baseDir, "diskpart_script.txt")
+	outPath := filepath.Join(artifactsDir, "DiskList.txt")
+
+	// Crear script para diskpart
+	script := "list disk\r\nexit\r\n"
+	err = os.WriteFile(scriptPath, []byte(script), 0644)
+	if err != nil {
+		fmt.Printf("Error creating diskpart script: %v\n", err)
+		return
+	}
+
+	// Preparar comando
+	cmd := exec.Command("diskpart", "/s", scriptPath)
+
+	// Capturar salida
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+
+	// Ejecutar
+	err = cmd.Run()
+	if err != nil {
+		fmt.Printf("Error running diskpart: %v\n", err)
+	}
+
+	// Guardar salida en archivo
+	err = os.WriteFile(outPath, output.Bytes(), 0644)
+	if err != nil {
+		fmt.Printf("Error writing output file: %v\n", err)
+		return
+	}
+
+	fmt.Printf("Disk list saved to: %s\n", outPath)
+}
+
 // Progress bar in terminal.
 func updateProgress(step, total int) {
 	progress := float64(step) / float64(total) * 100
@@ -216,6 +261,11 @@ func main() {
 	time.Sleep(500 * time.Millisecond)
 
 	ExecCommandAutorunsc64(baseDir, artifactsDir)
+	step++
+	updateProgress(step, totalSteps)
+	time.Sleep(500 * time.Millisecond)
+
+	listDisks(baseDir, artifactsDir)
 	step++
 	updateProgress(step, totalSteps)
 	time.Sleep(500 * time.Millisecond)
