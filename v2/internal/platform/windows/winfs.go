@@ -115,13 +115,13 @@ func classifyErr(err error) error {
 		switch errno {
 		case windows.ERROR_FILE_NOT_FOUND, windows.ERROR_PATH_NOT_FOUND, windows.ERROR_INVALID_NAME, windows.ERROR_BAD_NETPATH,
 			windows.ERROR_NOT_READY, windows.ERROR_DEV_NOT_EXIST:
-			return fmt.Errorf("%w: %v", collector.ErrNotPresent, err)
+			return fmt.Errorf("%w: %w", collector.ErrNotPresent, err)
 		case windows.ERROR_ACCESS_DENIED, windows.ERROR_PRIVILEGE_NOT_HELD:
-			return fmt.Errorf("%w: %v", collector.ErrAccessDenied, err)
+			return fmt.Errorf("%w: %w", collector.ErrAccessDenied, err)
 		case windows.ERROR_SHARING_VIOLATION, windows.ERROR_LOCK_VIOLATION:
-			return fmt.Errorf("%w: %v", collector.ErrLocked, err)
+			return fmt.Errorf("%w: %w", collector.ErrLocked, err)
 		case windows.ERROR_NOT_SUPPORTED, windows.ERROR_INVALID_FUNCTION, windows.ERROR_CALL_NOT_IMPLEMENTED:
-			return fmt.Errorf("%w: %v", collector.ErrNotSupported, err)
+			return fmt.Errorf("%w: %w", collector.ErrNotSupported, err)
 		}
 	}
 	return err
