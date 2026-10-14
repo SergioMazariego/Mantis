@@ -1,0 +1,69 @@
+version: 2
+project_name: mantis-collect
+
+before:
+  hooks:
+    - go -C v2 mod verify
+
+builds:
+  - id: mantis-collect
+    dir: v2
+    main: ./cmd/mantis-collect
+    binary: mantis-collect
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.CommitDate}}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    goos: [linux, windows]
+    goarch: ["386", amd64, arm64, arm]
+    goarm: ["7"]
+    ignore:
+      # 32-bit ARM is Linux-only here; windows/arm (v7) is not a target.
+      - goos: windows
+        goarch: arm
+      # a 32-bit Windows build under WOW64 redirects System32 and mis-reads several native structures
+      - goos: windows
+        goarch: "386"
+
+# Raw, single-file binaries: copy one file to the target host and run it.
+archives:
+  - formats: [binary]
+    name_template: "mantis-collect_{{ .Version }}_{{ .Os }}_{{ if eq .Arch \"arm\" }}armv7{{ else }}{{ .Arch }}{{ end }}"
+
+checksum:
+  name_template: SHA256SUMS
+  algorithm: sha256
+
+sboms:
+  - artifacts: binary
+    documents:
+      - "{{ .ArtifactName }}.sbom.json"
+
+changelog:
+  use: github
+  sort: asc
+  groups:
+    - title: Features
+      regexp: '^.*?feat(\(.+\))??!?:.+$'
+      order: 0
+    - title: Fixes
+      regexp: '^.*?fix(\(.+\))??!?:.+$'
+      order: 1
+    - title: Other
+      order: 999
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+      - '^ci:'
+
+release:
+  # v2.1.0-rc.1, v2.1.0-beta.2 ... are published as pre-releases automatically.
+  prerelease: auto
+  github:
+    owner: SergioMazariego
+    name: Mantis

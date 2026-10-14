@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+while read local_ref local_sha remote_ref remote_sha; do
+  case "$local_sha" in 0000000000000000000000000000000000000000) continue ;; esac
+  python tools/check_public_tree.py --ref "$local_sha"
+done
