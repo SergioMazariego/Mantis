@@ -92,7 +92,7 @@ Nothing is collected unless you select it.
 
 ### Validation status
 
-The Windows collectors run in CI on Windows Server 2022 and 2025 and on Windows 11 arm64 runners, and were exercised end to end, including the window and a standard-user run, in a clean Windows 11 environment. Every run builds a package and re-verifies it against planted test artifacts, including real Firefox history (Chromium browsers are checked structurally: profile present and History database collected). Raw NTFS reads are exercised on the Server and Windows 11 arm64 runners. Not yet exercised: physical hosts and a full Windows 11 amd64 client (the test sandbox refuses raw volume reads), and behaviour under endpoint protection products. Treat releases as release candidates until those are covered.
+The Windows collectors run in CI on Windows Server 2022 and 2025 and on Windows 11 arm64 runners, and were exercised end to end, including the window and a standard-user run, in a clean Windows 11 environment. Every run builds a package and re-verifies it against planted test artifacts, including real Firefox history (Chromium browsers are checked structurally: profile present and History database collected). Raw NTFS reads are exercised on the Server and Windows 11 arm64 runners. Not yet exercised: physical hosts and a full Windows 11 amd64 client (the test sandbox refuses raw volume reads).
 
 ## `03 // QUICK START`
 
@@ -213,7 +213,7 @@ Mantis is evolving from a collection utility toward a modern DFIR platform. The 
 
 | Area | Direction |
 |:--|:--|
-| Validation | Full Windows 11 client hosts, browsers with real profiles, behaviour under endpoint protection, code signing |
+| Validation | A full Windows 11 amd64 client host, history content of Chromium browsers, code signing |
 | Extensibility | Pluggable artifact extractors and parsers |
 | Case management | Organize evidence, findings and investigators in one place; collaborative investigations |
 | Automation | Reproducible, declarative investigation workflows |
