@@ -15,7 +15,7 @@ ALLOW = [re.compile(p) for p in (
     r'^(assets|v2/cmd/mantis-collect/assets)/mantis-[\w-]+\.png$',
     r'^\.githooks/pre-push$',
     r'^\.github/(workflows/[\w.-]+\.ya?ml|dependabot\.yml)$',
-    r'^tools/check_public_tree\.py$',
+    r'^tools/(check_public_tree\.py|validate/(Fixtures|Verify)\.ps1)$',
     r'^v2/(go\.mod|go\.sum|\.go-version|README\.md)$',
     r'^v2/(cmd|internal)/[\w./-]+\.go$',
 )]

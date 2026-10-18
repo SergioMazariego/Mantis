@@ -1,0 +1,91 @@
+name: Validate on Windows
+
+# Builds mantis-collect natively on throwaway Windows runners, plants benign fixtures,
+# collects with each profile and checks the evidence packages. Packages are never uploaded
+# (they hold runner-host data); only the verification reports and console logs are kept.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "v2/**"
+      - "tools/validate/**"
+      - ".github/workflows/validate-windows.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, windows-2025, windows-11-arm]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: v2/go.mod
+
+      - name: Build
+        working-directory: v2
+        shell: pwsh
+        run: |
+          go build -trimpath -o "$env:RUNNER_TEMP\mantis-collect.exe" ./cmd/mantis-collect
+          & "$env:RUNNER_TEMP\mantis-collect.exe" --version
+          [pscustomobject]@{ Arch = $env:PROCESSOR_ARCHITECTURE; Elevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole('Administrators'); OS = (Get-CimInstance Win32_OperatingSystem).Caption } | Format-List
+
+      - name: List catalog
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force C:\mantis-validate\logs | Out-Null
+          & "$env:RUNNER_TEMP\mantis-collect.exe" --list-artifacts | Tee-Object C:\mantis-validate\logs\catalog.txt | Select-Object -First 40
+
+      - name: Plant fixtures
+        shell: pwsh
+        run: ./tools/validate/Fixtures.ps1 -Background
+
+      - name: Collect and verify (quick, standard, full)
+        shell: pwsh
+        run: |
+          $exe = "$env:RUNNER_TEMP\mantis-collect.exe"
+          $summary = New-Object System.Collections.Generic.List[string]
+          $failed = $false
+          foreach ($p in 'quick', 'standard', 'full') {
+            $out = "C:\mantis-validate\out-$p"
+            $extra = @(); if ($p -eq 'full') { $extra = @('--confirm-sensitive') }
+            Write-Host "::group::collect $p"
+            $sw = [Diagnostics.Stopwatch]::StartNew()
+            & $exe --profile $p --output $out @extra *>&1 | Tee-Object "C:\mantis-validate\logs\collect-$p.txt" | Select-Object -Last 40
+            $code = $LASTEXITCODE
+            Write-Host "exit code $code after $([int]$sw.Elapsed.TotalSeconds)s (1 = finished with gaps, expected on a runner)"
+            Write-Host '::endgroup::'
+            if ($code -ge 2 -or -not (Test-Path "$out\manifest.json")) { Write-Host "::error::collection $p did not produce a package (exit $code)"; $failed = $true; continue }
+            Write-Host "::group::verify $p"
+            ./tools/validate/Verify.ps1 -Package $out -Profile $p -ReportPath "C:\mantis-validate\logs\verify-$p.md" | Tee-Object "C:\mantis-validate\logs\verify-$p.txt"
+            if ($LASTEXITCODE -ne 0) { $failed = $true }
+            Write-Host '::endgroup::'
+            if (Test-Path "C:\mantis-validate\logs\verify-$p.md") { Get-Content "C:\mantis-validate\logs\verify-$p.md" | Add-Content $env:GITHUB_STEP_SUMMARY }
+            Remove-Item $out -Recurse -Force -ErrorAction SilentlyContinue
+          }
+          if ($failed) { exit 1 }
+
+      - name: Remove fixtures
+        if: always()
+        shell: pwsh
+        run: ./tools/validate/Fixtures.ps1 -Remove
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: validation-${{ matrix.os }}
+          path: C:\mantis-validate\logs
+          if-no-files-found: warn
+          retention-days: 14
