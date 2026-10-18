@@ -1,9 +1,10 @@
 <#
   Mantis VM validation fixtures. Run ONLY inside a disposable test machine (VM or CI runner), elevated.
   Creates small, benign, clearly named artifacts so the collectors can be checked at evidence level.
-  Undo everything with:  .\vm-fixtures.ps1 -Remove
+  Undo everything with:  .\Fixtures.ps1 -Remove
+  -Background keeps the TCP listener in a hidden helper process (unattended runs, e.g. CI).
 #>
-param([switch]$Remove)
+param([switch]$Remove, [switch]$Background)
 $ErrorActionPreference = 'Continue'
 $marker = 'MantisFixture'
 $dl = Join-Path $env:USERPROFILE 'Downloads'
@@ -21,10 +22,11 @@ if ($Remove) {
   net user "${marker}User" /delete 2>$null | Out-Null
   $pidFile = Join-Path $env:TEMP "$marker.listener.pid"
   if (Test-Path $pidFile) { Stop-Process -Id ([int](Get-Content $pidFile)) -Force -ErrorAction SilentlyContinue; Remove-Item $pidFile -Force }
-  Write-Host 'fixtures removed'; return
+  Write-Host 'fixtures removed'; $global:LASTEXITCODE = 0; return
 }
 
 # 1. registry persistence (HKCU Run) and a user key
+New-Item 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Force | Out-Null
 Set-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name $marker -Value 'C:\Windows\System32\notepad.exe /MantisFixture'
 New-Item "HKCU:\Software\$marker" -Force | Out-Null
 Set-ItemProperty "HKCU:\Software\$marker" -Name 'Value' -Value 'fixture-registry-value'
@@ -45,7 +47,9 @@ Add-Type -AssemblyName Microsoft.VisualBasic
 [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile((Join-Path $dl "$marker-deleted.txt"), 'OnlyErrorDialogs', 'SendToRecycleBin')
 
 # 6. PowerShell history line (PSReadLine)
-Add-Content -Path (Join-Path $env:APPDATA 'Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt') -Value "Write-Output '$marker history line'"
+$histDir = Join-Path $env:APPDATA 'Microsoft\Windows\PowerShell\PSReadLine'
+New-Item -ItemType Directory -Force -Path $histDir | Out-Null
+Add-Content -Path (Join-Path $histDir 'ConsoleHost_history.txt') -Value "Write-Output '$marker history line'"
 
 # 7. Application event
 eventcreate /T INFORMATION /ID 999 /L APPLICATION /SO $marker /D "$marker event for evtx validation" | Out-Null
@@ -66,6 +70,7 @@ if ($Background) {
   Set-Content -Path (Join-Path $env:TEMP "$marker.listener.pid") -Value $p.Id
   Start-Sleep -Seconds 3
   Write-Host "Fixtures created. Hidden TCP listener on 127.0.0.1:50555 (pid $($p.Id))."
+  $global:LASTEXITCODE = 0
   return
 }
 $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 50555)

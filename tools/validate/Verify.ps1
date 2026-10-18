@@ -1,9 +1,10 @@
 <#
-  Verifies a Mantis evidence package against the fixtures from vm-fixtures.ps1.
-  Usage:  .\vm-verify.ps1 -Package D:\out-standard
-  Prints PASS/FAIL per check and a summary; does not modify the package.
+  Verifies a Mantis evidence package against the fixtures from Fixtures.ps1.
+  Usage:  .\Verify.ps1 -Package D:\out-standard [-Profile standard] [-ReportPath report.md]
+  Prints PASS/FAIL per check and a summary; does not modify the package. Exit code 1 if any check fails.
+  -Profile quick only runs the integrity checks; the fixture checks need standard or full.
 #>
-param([Parameter(Mandatory)][string]$Package)
+param([Parameter(Mandatory)][string]$Package, [ValidateSet('quick', 'standard', 'full')][string]$Profile = 'full', [string]$ReportPath)
 $ErrorActionPreference = 'Continue'
 $results = New-Object System.Collections.Generic.List[object]
 function Check($name, [scriptblock]$test) {
