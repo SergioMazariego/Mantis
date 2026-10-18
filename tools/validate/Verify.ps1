@@ -115,6 +115,23 @@ Check 'V-SEC: Defender configuration dump present' { Art 'security-defender-conf
 Check 'V-BROWSER: no credential/cookie stores in the package' {
   -not (Get-ChildItem $Package -Recurse -File | Where-Object { $_.Name -in 'Login Data', 'Cookies', 'Web Data', 'Local State', 'key4.db', 'logins.json', 'cookies.sqlite' })
 }
+foreach ($br in @(
+    @{ Name = 'Chrome'; Id = 'browser-chrome'; Exe = "$env:ProgramFiles\Google\Chrome\Application\chrome.exe"; File = 'History' },
+    @{ Name = 'Edge'; Id = 'browser-edge'; Exe = "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe"; File = 'History' },
+    @{ Name = 'Firefox'; Id = 'browser-firefox'; Exe = "$env:ProgramFiles\Mozilla Firefox\firefox.exe"; File = 'places.sqlite*' })) {
+  if (-not (Test-Path $br.Exe)) { continue }
+  $b = $br
+  Check ("V-BROWSER: {0} history collected and holds the fixture URL" -f $b.Name) {
+    $a = Art $b.Id
+    if (-not $a -or ($a | Where-Object { $_.status -like 'collected*' }).Count -eq 0) {
+      throw ("{0}: {1}" -f $b.Id, (($a | ForEach-Object { '{0} {1}' -f $_.status, $_.error }) -join '; '))
+    }
+    $hit = Get-ChildItem (Join-Path $Package 'browsers') -Recurse -File -Filter $b.File -ErrorAction SilentlyContinue |
+      Where-Object { Select-String -LiteralPath $_.FullName -SimpleMatch 'MantisFixture-browser' -Quiet } | Select-Object -First 1
+    if (-not $hit) { throw 'history file(s) collected but the fixture URL is not inside' }
+    $true
+  }
+}
 Check 'V-NOT-FULL: the report states that completeness is not implied' { (Get-Content (Join-Path $Package 'acquisition-report.json') -Raw) -match 'does not imply' }
 }
 

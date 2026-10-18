@@ -65,6 +65,21 @@ if (-not (Get-LocalUser -Name "${marker}User" -ErrorAction SilentlyContinue)) { 
 $null = Get-WinEvent -LogName Application -FilterXPath "*[System[EventID=999]]" -MaxEvents 1 -ErrorAction SilentlyContinue -OutVariable liveEvt
 Write-Host ("Application event 999 present in the live log: {0}" -f [bool]$liveEvt)
 
+# 9b. real browser profiles: start each installed browser headless once on a marker URL so a profile with
+#     history exists (CI images ship Chrome, Edge and Firefox; machines without them are skipped)
+$browserUrl = "https://example.com/$marker-browser"
+$browsers = @(
+  @{ Name = 'chrome'; Exe = "$env:ProgramFiles\Google\Chrome\Application\chrome.exe"; Args = @('--headless=new', '--disable-gpu', '--no-first-run', '--virtual-time-budget=8000', '--dump-dom', $browserUrl) },
+  @{ Name = 'edge'; Exe = "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe"; Args = @('--headless=new', '--disable-gpu', '--no-first-run', '--virtual-time-budget=8000', '--dump-dom', $browserUrl) },
+  @{ Name = 'firefox'; Exe = "$env:ProgramFiles\Mozilla Firefox\firefox.exe"; Args = @('-headless', '-screenshot', (Join-Path $env:TEMP "$marker-firefox.png"), $browserUrl) }
+)
+foreach ($b in $browsers) {
+  if (-not (Test-Path $b.Exe)) { Write-Host "browser fixture: $($b.Name) not installed, skipped"; continue }
+  $proc = Start-Process -FilePath $b.Exe -ArgumentList $b.Args -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $env:TEMP "$marker-$($b.Name).out") -RedirectStandardError (Join-Path $env:TEMP "$marker-$($b.Name).err")
+  if (-not $proc.WaitForExit(60000)) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue; Write-Host "browser fixture: $($b.Name) timed out" } else { Write-Host "browser fixture: $($b.Name) exit $($proc.ExitCode)" }
+}
+Start-Sleep -Seconds 2
+
 # 10. a running process with a recognizable command line and a TCP listener
 Start-Process -FilePath ping.exe -ArgumentList '-t', '127.0.0.1', "-l", '32' -WindowStyle Hidden
 if ($Background) {
