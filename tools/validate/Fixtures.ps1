@@ -60,7 +60,7 @@ New-Item "HKCU:\Software\Microsoft\Terminal Server Client\Servers\fixture.invali
 Set-ItemProperty "HKCU:\Software\Microsoft\Terminal Server Client\Servers\fixture.invalid" -Name UsernameHint -Value $marker
 
 # 9. a local account (removed with -Remove)
-net user "${marker}User" 'Fixture-Pa55w0rd!' /add 2>&1 | Write-Host
+net user "${marker}User" 'Fx-Pa55w0rd!' /add 2>&1 | Write-Host
 if (-not (Get-LocalUser -Name "${marker}User" -ErrorAction SilentlyContinue)) { Write-Host "WARNING: fixture account was not created" }
 $null = Get-WinEvent -LogName Application -FilterXPath "*[System[EventID=999]]" -MaxEvents 1 -ErrorAction SilentlyContinue -OutVariable liveEvt
 Write-Host ("Application event 999 present in the live log: {0}" -f [bool]$liveEvt)
