@@ -37,6 +37,11 @@ func (p *picker) layout() layout {
 	l.header = rc(0, 0, W, s(92))
 	l.info = rc(s(16), s(104), W-s(16), s(172))
 	top := s(184)
+	if p.phase != phSelect && H*96/p.dpi < 720 {
+		// short windows: on the execution screen the source table matters more than the case strip
+		l.info = rc(0, 0, 0, 0)
+		top = s(104)
+	}
 	l.foot = rc(s(16), H-s(88), W-s(16), H-s(12))
 	bottom := int(l.foot.T) - s(12)
 	l.side = rc(s(16), top, s(236), bottom)
@@ -785,7 +790,9 @@ func (p *picker) paint() {
 func (p *picker) drawAll(c canvas, l layout) {
 	c.fill(rc(0, 0, l.w, l.h), colBG)
 	p.drawHeader(c, l)
-	p.drawInfo(c, l)
+	if l.info.R > l.info.L {
+		p.drawInfo(c, l)
+	}
 	if p.phase == phSelect {
 		p.drawSidebar(c, l)
 		p.drawTable(c, l)
