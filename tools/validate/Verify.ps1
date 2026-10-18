@@ -63,7 +63,13 @@ Check 'V-NETWORK: TCP listener on 50555 with an owning PID' {
 }
 Check 'V-NTFS: Zone.Identifier stream of the fixture preserved' { AnyFileContains '*.Zone.Identifier' 'example.invalid' }
 Check 'V-NTFS: Recycle Bin $I record preserved' { Get-ChildItem $Package -Recurse -File | Where-Object { $_.Name -like '$I*' } | Select-Object -First 1 }
-Check 'V-NTFS: $MFT acquired for the system drive (admin run)' { Art 'ntfs-mft-*' | Where-Object { $_.status -eq 'collected' } }
+Check 'V-NTFS: $MFT of the system drive acquired, or reported not_supported when the host refuses raw volume reads' {
+  $d = $env:SystemDrive.TrimEnd(':')
+  $a = Art "ntfs-mft-$d"
+  if ($a.status -eq 'collected') { return $true }
+  if ($a.status -eq 'not_supported') { return $true } # e.g. Windows Sandbox: the request is not supported on the volume
+  throw ("ntfs-mft-{0} status: {1}; {2}" -f $d, $a.status, $a.error)
+}
 Check 'V-USERS: PSReadLine history line preserved' { AnyFileContains 'ConsoleHost_history.txt' 'MantisFixture history line' }
 Check 'V-USERS: fixture account listed' {
   $t = Text 'users\users-accounts.json'

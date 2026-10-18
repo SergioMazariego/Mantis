@@ -206,7 +206,7 @@ func rawVolumeFor(drive string) (*ntfs.Volume, error) {
 		if errors.Is(err, ntfs.ErrNotNTFS) {
 			rv.err = fmt.Errorf("%w: %s is not an NTFS volume", collector.ErrNotSupported, drive)
 		} else {
-			rv.err = fmt.Errorf("parse NTFS volume %s: %w", drive, err)
+			rv.err = classifyErr(fmt.Errorf("parse NTFS volume %s: %w", drive, err))
 		}
 		return nil, rv.err
 	}
