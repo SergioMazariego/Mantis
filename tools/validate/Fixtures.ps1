@@ -69,8 +69,8 @@ Write-Host ("Application event 999 present in the live log: {0}" -f [bool]$liveE
 #     history exists (CI images ship Chrome, Edge and Firefox; machines without them are skipped)
 $browserUrl = "https://example.com/$marker-browser"
 $browsers = @(
-  @{ Name = 'chrome'; Exe = "$env:ProgramFiles\Google\Chrome\Application\chrome.exe"; Args = @('--headless=new', '--disable-gpu', '--no-first-run', "--user-data-dir=$env:LOCALAPPDATA\Google\Chrome\User Data", '--virtual-time-budget=8000', '--dump-dom', $browserUrl) },
-  @{ Name = 'edge'; Exe = "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe"; Args = @('--headless=new', '--disable-gpu', '--no-first-run', "--user-data-dir=$env:LOCALAPPDATA\Microsoft\Edge\User Data", '--virtual-time-budget=8000', '--dump-dom', $browserUrl) },
+  @{ Name = 'chrome'; Exe = "$env:ProgramFiles\Google\Chrome\Application\chrome.exe"; Args = @('--headless=new', '--disable-gpu', '--no-first-run', "--user-data-dir=$env:LOCALAPPDATA\Google\Chrome\User Data", '--no-sandbox', '--virtual-time-budget=8000', "--screenshot=$env:TEMP\$marker-shot.png", $browserUrl) },
+  @{ Name = 'edge'; Exe = "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe"; Args = @('--headless=new', '--disable-gpu', '--no-first-run', "--user-data-dir=$env:LOCALAPPDATA\Microsoft\Edge\User Data", '--no-sandbox', '--virtual-time-budget=8000', "--screenshot=$env:TEMP\$marker-shot.png", $browserUrl) },
   @{ Name = 'firefox'; Exe = "$env:ProgramFiles\Mozilla Firefox\firefox.exe"; Args = @('-headless', '-screenshot', (Join-Path $env:TEMP "$marker-firefox.png"), $browserUrl) }
 )
 foreach ($b in $browsers) {
