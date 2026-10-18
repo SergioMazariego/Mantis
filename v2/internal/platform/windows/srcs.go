@@ -131,9 +131,10 @@ func walkGroup(id string, m collector.Meta, locator string, spec walkSpec) colle
 		Expand: func(ctx context.Context) ([]collector.Source, error) {
 			var out []collector.Source
 			var gaps []string
+			gapsDenied := true // stays true only while every gap is an access-denied directory
 			count := 0
 			for _, root := range spec.Roots() {
-				truncated := walkFiles(ctx, root, spec, func(path string, _ int64) bool {
+				truncated, denied := walkFilesStatus(ctx, root, spec, func(path string, _ int64) bool {
 					count++
 					if count > spec.MaxFiles {
 						return false
@@ -145,10 +146,14 @@ func walkGroup(id string, m collector.Meta, locator string, spec walkSpec) colle
 				})
 				if truncated != "" {
 					gaps = append(gaps, root+": "+truncated)
+					if !denied {
+						gapsDenied = false
+					}
 				}
 			}
 			if count > spec.MaxFiles {
 				gaps = append(gaps, fmt.Sprintf("enumeration stopped after %d files (limit)", spec.MaxFiles))
+				gapsDenied = false
 			}
 			if len(out) == 0 && len(gaps) == 0 {
 				return nil, fmt.Errorf("%w: no matching files", collector.ErrNotPresent)
@@ -158,6 +163,9 @@ func walkGroup(id string, m collector.Meta, locator string, spec walkSpec) colle
 				out = append(out, collector.Source{ID: id + "-enumeration-gap", Kind: "windows.collection_gap", Locator: locator,
 					Method: "directory-walk", MaxBytes: 1, Meta: collector.Meta{Name: m.Name + " (gap)", Category: m.Category, DestPath: m.Category + "/gaps/" + id + ".txt"},
 					Open: func(context.Context) (io.ReadCloser, error) {
+						if gapsDenied {
+							return nil, fmt.Errorf("%w: enumeration incomplete: %s", collector.ErrAccessDenied, msg)
+						}
 						return nil, errors.New("enumeration incomplete: " + msg)
 					}})
 			}
@@ -169,11 +177,25 @@ func walkGroup(id string, m collector.Meta, locator string, spec walkSpec) colle
 // walkFiles visits regular, non-reparse files under root. fn returns false to stop.
 // It returns a non-empty string describing why enumeration was incomplete.
 func walkFiles(ctx context.Context, root string, spec walkSpec, fn func(path string, size int64) bool) string {
+	problems, _ := walkFilesStatus(ctx, root, spec, fn)
+	return problems
+}
+
+// walkFilesStatus is walkFiles plus whether every recorded problem was an access-denied error,
+// which the caller reports as access_denied (an expected outcome without elevation) rather than failed.
+func walkFilesStatus(ctx context.Context, root string, spec walkSpec, fn func(path string, size int64) bool) (string, bool) {
 	var problems []string
+	deniedOnly := true
 	note := func(format string, args ...any) {
 		if len(problems) < 5 {
 			problems = append(problems, fmt.Sprintf(format, args...))
 		}
+	}
+	noteErr := func(err error, format string, args ...any) {
+		if !errors.Is(classifyErr(err), collector.ErrAccessDenied) {
+			deniedOnly = false
+		}
+		note(format, args...)
 	}
 	var walk func(dir string, depth int) bool
 	walk = func(dir string, depth int) bool {
@@ -183,7 +205,7 @@ func walkFiles(ctx context.Context, root string, spec walkSpec, fn func(path str
 		entries, err := os.ReadDir(extended(dir))
 		if err != nil {
 			if !errors.Is(classifyErr(err), collector.ErrNotPresent) {
-				note("unreadable directory %s: %v", dir, err)
+				noteErr(err, "unreadable directory %s: %v", dir, err)
 			}
 			return true
 		}
@@ -196,6 +218,7 @@ func walkFiles(ctx context.Context, root string, spec walkSpec, fn func(path str
 					continue // flat by design: subdirectories are intentionally not part of this group
 				}
 				if depth >= spec.MaxDepth {
+					deniedOnly = false
 					note("depth limit reached at %s", path)
 					continue
 				}
@@ -203,7 +226,7 @@ func walkFiles(ctx context.Context, root string, spec walkSpec, fn func(path str
 					continue
 				}
 				if reparse, err := reparseState(path); err != nil {
-					note("cannot inspect %s: %v", path, err)
+					noteErr(err, "cannot inspect %s: %v", path, err)
 					continue
 				} else if reparse {
 					continue // junctions and mount points are never followed
@@ -224,7 +247,7 @@ func walkFiles(ctx context.Context, root string, spec walkSpec, fn func(path str
 			}
 			info, err := e.Info()
 			if err != nil {
-				note("unreadable entry %s: %v", path, err)
+				noteErr(err, "unreadable entry %s: %v", path, err)
 				continue
 			}
 			if !fn(path, info.Size()) {
@@ -234,7 +257,7 @@ func walkFiles(ctx context.Context, root string, spec walkSpec, fn func(path str
 		return true
 	}
 	walk(root, 0)
-	return strings.Join(problems, "; ")
+	return strings.Join(problems, "; "), deniedOnly && len(problems) > 0
 }
 
 // reparseState reports whether path is a reparse point; an error means it could not be inspected.

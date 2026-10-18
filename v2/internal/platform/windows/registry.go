@@ -419,11 +419,14 @@ func registrySources() []collector.Source {
 	for _, h := range []struct{ file, sub string }{{"SYSTEM", "SYSTEM"}, {"SOFTWARE", "SOFTWARE"}, {"SAM", "SAM"}, {"SECURITY", "SECURITY"}, {"DEFAULT", ""}} {
 		mm := mach
 		mm.Name = h.file + " hive"
-		root := uintptr(0)
+		root, sub := uintptr(0), h.sub
 		if h.sub != "" {
 			root = hkeyLocalMachine
 		}
-		src := requiresAdmin(hiveSource("hive-"+strings.ToLower(h.file), mm, cfg+`\`+h.file, root, h.sub))
+		if h.file == "DEFAULT" { // loaded under HKU, not HKLM: gives RegSaveKeyEx a fallback when the file is locked
+			root, sub = hkeyUsers, ".DEFAULT"
+		}
+		src := requiresAdmin(hiveSource("hive-"+strings.ToLower(h.file), mm, cfg+`\`+h.file, root, sub))
 		if h.file == "SAM" || h.file == "SECURITY" {
 			// local password hashes, LSA secrets and cached domain credentials: explicit approval required
 			src = sensitiveFullOnly(src, "contains local password hashes and LSA secrets; collect only with explicit authorization")
