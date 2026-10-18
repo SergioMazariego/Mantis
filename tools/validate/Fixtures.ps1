@@ -69,14 +69,18 @@ Write-Host ("Application event 999 present in the live log: {0}" -f [bool]$liveE
 #     history exists (CI images ship Chrome, Edge and Firefox; machines without them are skipped)
 $browserUrl = "https://example.com/$marker-browser"
 $browsers = @(
-  @{ Name = 'chrome'; Exe = "$env:ProgramFiles\Google\Chrome\Application\chrome.exe"; Args = @('--headless=new', '--disable-gpu', '--no-first-run', '--virtual-time-budget=8000', '--dump-dom', $browserUrl) },
-  @{ Name = 'edge'; Exe = "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe"; Args = @('--headless=new', '--disable-gpu', '--no-first-run', '--virtual-time-budget=8000', '--dump-dom', $browserUrl) },
+  @{ Name = 'chrome'; Exe = "$env:ProgramFiles\Google\Chrome\Application\chrome.exe"; Args = @('--headless=new', '--disable-gpu', '--no-first-run', "--user-data-dir=$env:LOCALAPPDATA\Google\Chrome\User Data", '--virtual-time-budget=8000', '--dump-dom', $browserUrl) },
+  @{ Name = 'edge'; Exe = "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe"; Args = @('--headless=new', '--disable-gpu', '--no-first-run', "--user-data-dir=$env:LOCALAPPDATA\Microsoft\Edge\User Data", '--virtual-time-budget=8000', '--dump-dom', $browserUrl) },
   @{ Name = 'firefox'; Exe = "$env:ProgramFiles\Mozilla Firefox\firefox.exe"; Args = @('-headless', '-screenshot', (Join-Path $env:TEMP "$marker-firefox.png"), $browserUrl) }
 )
 foreach ($b in $browsers) {
   if (-not (Test-Path $b.Exe)) { Write-Host "browser fixture: $($b.Name) not installed, skipped"; continue }
   $proc = Start-Process -FilePath $b.Exe -ArgumentList $b.Args -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $env:TEMP "$marker-$($b.Name).out") -RedirectStandardError (Join-Path $env:TEMP "$marker-$($b.Name).err")
   if (-not $proc.WaitForExit(60000)) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue; Write-Host "browser fixture: $($b.Name) timed out" } else { Write-Host "browser fixture: $($b.Name) exit $($proc.ExitCode)" }
+}
+foreach ($root in "$env:LOCALAPPDATA\Google\Chrome\User Data", "$env:LOCALAPPDATA\Microsoft\Edge\User Data", "$env:APPDATA\Mozilla\Firefox") {
+  $names = if (Test-Path $root) { (Get-ChildItem $root -ErrorAction SilentlyContinue | Select-Object -First 12 | ForEach-Object Name) -join ', ' } else { '(missing)' }
+  Write-Host "browser profile root ${root}: $names"
 }
 Start-Sleep -Seconds 2
 

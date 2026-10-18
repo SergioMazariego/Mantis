@@ -122,7 +122,7 @@ foreach ($br in @(
   if (-not (Test-Path $br.Exe)) { continue }
   $b = $br
   Check ("V-BROWSER: {0} history collected and holds the fixture URL" -f $b.Name) {
-    $a = Art $b.Id
+    $a = Art ($b.Id + '*')
     if (-not $a -or ($a | Where-Object { $_.status -like 'collected*' }).Count -eq 0) {
       throw ("{0}: {1}" -f $b.Id, (($a | ForEach-Object { '{0} {1}' -f $_.status, $_.error }) -join '; '))
     }
