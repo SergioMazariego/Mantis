@@ -65,11 +65,19 @@ Check 'V-NTFS: Zone.Identifier stream of the fixture preserved' { AnyFileContain
 Check 'V-NTFS: Recycle Bin $I record preserved' { Get-ChildItem $Package -Recurse -File | Where-Object { $_.Name -like '$I*' } | Select-Object -First 1 }
 Check 'V-NTFS: $MFT acquired for the system drive (admin run)' { Art 'ntfs-mft-*' | Where-Object { $_.status -eq 'collected' } }
 Check 'V-USERS: PSReadLine history line preserved' { AnyFileContains 'ConsoleHost_history.txt' 'MantisFixture history line' }
-Check 'V-USERS: fixture account listed' { (Text 'users\users-accounts.json') -match 'MantisFixtureUser' }
+Check 'V-USERS: fixture account listed' {
+  $t = Text 'users\users-accounts.json'
+  if ($t -match 'MantisFixtureUser') { return $true }
+  $names = [regex]::Matches($t, '"(?:name|user_name)"\s*:\s*"([^"]+)"') | ForEach-Object { $_.Groups[1].Value } | Select-Object -First 15
+  throw ("not found; {0} bytes; names seen: {1}" -f $t.Length, ($names -join ','))
+}
 Check 'V-REMOTE: Default.rdp and RDP client history key preserved' { (AnyFileContains 'Default.rdp' 'fixture.invalid') -and ((Text 'remote-access\remote-rdp-client-history.json') -match 'fixture.invalid') }
 Check 'V-EVT: Application log exported and contains event 999 from MantisFixture' {
   $f = Get-ChildItem (Join-Path $Package 'eventlogs') -Filter 'Application.evtx' | Select-Object -First 1
-  Get-WinEvent -Path $f.FullName -FilterXPath "*[System[EventID=999]]" -MaxEvents 1 | Where-Object { $_.ProviderName -eq 'MantisFixture' }
+  $e = Get-WinEvent -Path $f.FullName -FilterXPath "*[System[EventID=999]]" -MaxEvents 1 -ErrorAction SilentlyContinue | Where-Object { $_.ProviderName -eq 'MantisFixture' }
+  if ($e) { return $true }
+  $latest = Get-WinEvent -Path $f.FullName -MaxEvents 5 -ErrorAction SilentlyContinue | ForEach-Object { '{0}/{1}' -f $_.Id, $_.ProviderName }
+  throw ("event not found in {0} ({1} bytes); latest events: {2}" -f $f.Name, $f.Length, ($latest -join ','))
 }
 Check 'V-EVT: all discovered channels were attempted (more than 100 evtx items)' { ($man.artifacts | Where-Object { $_.id -like 'evtx-*' }).Count -gt 100 }
 Check 'V-REG: SYSTEM and SOFTWARE hives acquired with a reported method' {
@@ -88,7 +96,14 @@ Check 'V-REG: hive starts with the regf signature' {
   $f = Join-Path $Package 'registry\C\Windows\System32\config\SYSTEM'
   [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($f)[0..3]) -eq 'regf'
 }
-Check 'V-EXEC: Prefetch files present' { (Get-ChildItem (Join-Path $Package 'execution') -Recurse -Filter '*.pf' -ErrorAction SilentlyContinue).Count -gt 0 }
+Check 'V-EXEC: Prefetch files present (or the host has none and the gap is reported)' {
+  $collected = (Get-ChildItem (Join-Path $Package 'execution') -Recurse -Filter '*.pf' -ErrorAction SilentlyContinue).Count
+  if ($collected -gt 0) { return $true }
+  # Windows Server and some images run with Prefetch disabled: then not_present is the truthful outcome
+  $onHost = (Get-ChildItem (Join-Path $env:SystemRoot 'Prefetch') -Filter '*.pf' -ErrorAction SilentlyContinue).Count
+  if ($onHost -eq 0) { return [bool](Art 'execution-prefetch' | Where-Object { $_.status -eq 'not_present' }) }
+  throw "$onHost .pf files exist on the host but none were collected"
+}
 Check 'V-SYSTEM: physical disks and partitions inventoried' { ((Text 'system\system-disks.json' | ConvertFrom-Json).data.physical_disks).Count -ge 1 }
 Check 'V-SEC: Defender configuration dump present' { Art 'security-defender-config' | Where-Object { $_.status -like 'collected*' } }
 Check 'V-BROWSER: no credential/cookie stores in the package' {

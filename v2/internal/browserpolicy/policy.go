@@ -98,6 +98,21 @@ var firefoxProfileFiles = map[string]bool{
 	"extensions.json": true, "prefs.js": true, "user.js": true, "containers.json": true, "handlers.json": true, "addons.json": true,
 }
 
+// FirefoxSkipDir reports whether a directory relative to "...\Mozilla\Firefox" is outside
+// the collected layout (profiles.ini/installs.ini at the root and files directly inside
+// Profiles\<profile>). Background-task profiles, crash reports and pending pings are never
+// descended into, so the walk never hits a depth limit inside them.
+func FirefoxSkipDir(rel string) bool {
+	parts := normRel(rel)
+	if len(parts) == 0 {
+		return false
+	}
+	if parts[0] != "profiles" || len(parts) > 2 {
+		return true
+	}
+	return SkipDir(rel)
+}
+
 // FirefoxAllowed decides for a path relative to the "...\Mozilla\Firefox" directory.
 // Session store files are excluded: they embed session cookies and form data.
 func FirefoxAllowed(rel string) (bool, string) {

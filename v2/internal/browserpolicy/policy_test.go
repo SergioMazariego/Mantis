@@ -53,3 +53,16 @@ func TestBrowserSkipDirs(t *testing.T) {
 		t.Error("Extensions and Sessions must be traversed")
 	}
 }
+
+func TestFirefoxSkipDirKeepsTheWalkInsideProfiles(t *testing.T) {
+	for _, d := range []string{`Background Tasks Profiles`, `Background Tasks Profiles\x.MozillaBackgroundTask\datareporting`, `Crash Reports`, `Profiles\abc.default\storage`, `Profiles\abc.default\sessionstore-backups`} {
+		if !FirefoxSkipDir(d) {
+			t.Errorf("%s should be skipped", d)
+		}
+	}
+	for _, d := range []string{`Profiles`, `Profiles\abc.default`} {
+		if FirefoxSkipDir(d) {
+			t.Errorf("%s must be traversed", d)
+		}
+	}
+}
