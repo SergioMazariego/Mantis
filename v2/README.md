@@ -2,7 +2,7 @@
 
 Evidence collector for Windows and Linux. Each run stores the selected artifacts in a case-scoped, content-addressed store (SHA-256) with custody records and a tamper-evident audit chain, then exports a **portable, self-describing evidence package** (manifest, per-source status, checksums) that is re-verified from disk. It is a single static binary with no runtime dependencies and no external tools to download.
 
-> **Status:** release candidates. The Windows collectors run in CI on Windows Server 2022 and 2025 and on Windows 11 arm64 runners, and were exercised end to end (including the window and a standard-user run) in a clean Windows 11 environment; every run builds an evidence package and re-verifies it against planted test artifacts. Not yet exercised: physical hosts and full Windows 11 client virtual machines, browsers with real profiles, and behaviour under endpoint protection products.
+> **Status:** release candidates. The Windows collectors run in CI on Windows Server 2022 and 2025 and on Windows 11 arm64 runners, and were exercised end to end (including the window and a standard-user run) in a clean Windows 11 environment; every run builds an evidence package and re-verifies it against planted test artifacts. Real Firefox history is verified in CI; Chromium browsers are checked structurally (profile present, History database collected). Not yet exercised: physical hosts and a full Windows 11 amd64 client, and behaviour under endpoint protection products.
 
 ## Download
 
