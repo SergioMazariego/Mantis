@@ -116,18 +116,22 @@ Check 'V-BROWSER: no credential/cookie stores in the package' {
   -not (Get-ChildItem $Package -Recurse -File | Where-Object { $_.Name -in 'Login Data', 'Cookies', 'Web Data', 'Local State', 'key4.db', 'logins.json', 'cookies.sqlite' })
 }
 foreach ($br in @(
-    @{ Name = 'Chrome'; Id = 'browser-chrome'; Exe = "$env:ProgramFiles\Google\Chrome\Application\chrome.exe"; File = 'History' },
-    @{ Name = 'Edge'; Id = 'browser-edge'; Exe = "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe"; File = 'History' },
-    @{ Name = 'Firefox'; Id = 'browser-firefox'; Exe = "$env:ProgramFiles\Mozilla Firefox\firefox.exe"; File = 'places.sqlite*' })) {
-  if (-not (Test-Path $br.Exe)) { continue }
+    # Headless Chromium on CI images does not record the visit (and Chrome creates no profile at all), so for
+    # Chromium browsers the check is structural: the profile exists and its History database was collected.
+    @{ Name = 'Chrome'; Id = 'browser-chrome'; Profile = "$env:LOCALAPPDATA\Google\Chrome\User Data\Default"; File = 'History'; Content = $false },
+    @{ Name = 'Edge'; Id = 'browser-edge'; Profile = "$env:LOCALAPPDATA\Microsoft\Edge\User Data\Default"; File = 'History'; Content = $false },
+    @{ Name = 'Firefox'; Id = 'browser-firefox'; Profile = "$env:APPDATA\Mozilla\Firefox\Profiles"; File = 'places.sqlite*'; Content = $true })) {
+  if (-not (Test-Path $br.Profile)) { continue }
   $b = $br
-  Check ("V-BROWSER: {0} history collected and holds the fixture URL" -f $b.Name) {
+  Check ("V-BROWSER: {0} history collected{1}" -f $b.Name, $(if ($b.Content) { ' and holds the fixture URL' } else { '' })) {
     $a = Art ($b.Id + '*')
     if (-not $a -or ($a | Where-Object { $_.status -like 'collected*' }).Count -eq 0) {
       throw ("{0}: {1}" -f $b.Id, (($a | ForEach-Object { '{0} {1}' -f $_.status, $_.error }) -join '; '))
     }
-    $hit = Get-ChildItem (Join-Path $Package 'browsers') -Recurse -File -Filter $b.File -ErrorAction SilentlyContinue |
-      Where-Object { Select-String -LiteralPath $_.FullName -SimpleMatch 'MantisFixture-browser' -Quiet } | Select-Object -First 1
+    $files = Get-ChildItem (Join-Path $Package 'browsers') -Recurse -File -Filter $b.File -ErrorAction SilentlyContinue
+    if (-not $files) { throw 'artifact reported collected but no history file is in the package' }
+    if (-not $b.Content) { return $true }
+    $hit = $files | Where-Object { Select-String -LiteralPath $_.FullName -SimpleMatch 'MantisFixture-browser' -Quiet } | Select-Object -First 1
     if (-not $hit) { throw 'history file(s) collected but the fixture URL is not inside' }
     $true
   }
