@@ -46,7 +46,7 @@ func browserSources() []collector.Source {
 	}
 	firefox := walkGroup("browser-firefox", bm("Mozilla Firefox history and configuration", "places.sqlite (history, bookmarks, downloads) with WAL, favicons, extensions.json, prefs and profiles.ini. Session store, cookies and logins are excluded",
 		collector.InStdFull, "browser/firefox-places-sqlite.md"), `%APPDATA%\Mozilla\Firefox`, walkSpec{
-		Roots: perUserRoots(`AppData\Roaming\Mozilla\Firefox`), MaxDepth: 4, MaxFiles: 2000, FileMax: 1 << 30, SkipDir: browserpolicy.SkipDir,
+		Roots: perUserRoots(`AppData\Roaming\Mozilla\Firefox`), MaxDepth: 4, MaxFiles: 2000, FileMax: 1 << 30, SkipDir: browserpolicy.FirefoxSkipDir,
 		Match: func(rel, _ string) bool {
 			ok, _ := browserpolicy.FirefoxAllowed(rel)
 			return ok

@@ -230,6 +230,15 @@ func (r *Runner) RunObserved(ctx context.Context, scope casecore.Scope, plan Pla
 		} else {
 			remaining -= tracked.count
 		}
+		// a failed Open reaches the ingest and Close paths again through errorReadCloser: report it once
+		if openErr != nil {
+			if errors.Is(collectErr, openErr) {
+				collectErr = nil
+			}
+			if errors.Is(closeErr, openErr) {
+				closeErr = nil
+			}
+		}
 		item := ItemResult{SourceID: src.ID, Result: result, Err: errors.Join(openErr, collectErr, closeErr),
 			Meta: src.Meta, Kind: src.Kind, Locator: src.Locator, Method: method, Notes: notes, AcquiredAt: time.Now().UTC()}
 		results = append(results, item)
