@@ -58,7 +58,7 @@ func browserSources() []collector.Source {
 				return strings.HasPrefix(l, "webcachev") || strings.HasSuffix(l, ".log") || strings.HasSuffix(l, ".jfm") || strings.HasSuffix(l, ".chk")
 			}})
 	return []collector.Source{
-		chromium("browser-edge", "Microsoft Edge", `AppData\Local\Microsoft\Edge\User Data`),
+		chromium("browser-edge", "Edge", `AppData\Local\Microsoft\Edge\User Data`),
 		chromium("browser-chrome", "Google Chrome", `AppData\Local\Google\Chrome\User Data`),
 		firefox, webcache,
 	}

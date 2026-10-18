@@ -11,7 +11,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 # Only paths matching one of these are allowed in the public repository.
 ALLOW = [re.compile(p) for p in (
-    r'^(LICENSE\.txt|README\.md|mantis\.go|\.gitignore|\.goreleaser\.yaml)$',
+    r'^(LICENSE\.txt|README\.md|\.gitignore|\.goreleaser\.yaml)$',
     r'^(assets|v2/cmd/mantis-collect/assets)/mantis-[\w-]+\.png$',
     r'^\.githooks/pre-push$',
     r'^\.github/(workflows/[\w.-]+\.ya?ml|dependabot\.yml)$',

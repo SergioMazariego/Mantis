@@ -2,11 +2,11 @@
 
 Evidence collector for Windows and Linux. Each run stores the selected artifacts in a case-scoped, content-addressed store (SHA-256) with custody records and a tamper-evident audit chain, then exports a **portable, self-describing evidence package** (manifest, per-source status, checksums) that is re-verified from disk. It is a single static binary with no runtime dependencies and no external tools to download.
 
-> **Status:** the expanded Windows acquisition (profiles, evidence package, registry hives, NTFS metadata, event-log discovery, browsers, and the other modules) is implemented and statically checked but **has not yet been validated on a Windows host**. Treat its output as unverified until the validation run described in the project documentation is complete.
+> **Status:** release candidates. The Windows collectors run in CI on Windows Server 2022 and 2025 and on Windows 11 arm64 runners, and were exercised end to end (including the window and a standard-user run) in a clean Windows 11 environment; every run builds an evidence package and re-verifies it against planted test artifacts. Not yet exercised: physical hosts and full Windows 11 client virtual machines, browsers with real profiles, and behaviour under endpoint protection products.
 
 ## Download
 
-Pre-built binaries are attached to each [release](../../releases) once published (Windows amd64/arm64, Linux amd64/arm64/386/armv7). Verify against `SHA256SUMS`. Releases also carry a per-binary SBOM and a build-provenance attestation (`gh attestation verify <file> --repo SergioMazariego/Mantis`).
+Pre-built binaries are attached to each [release](../../releases) (Windows amd64/arm64, Linux amd64/arm64/386/armv7). Verify against `SHA256SUMS`. Releases also carry a per-binary SBOM and a build-provenance attestation (`gh attestation verify <file> --repo SergioMazariego/Mantis`).
 
 ## Usage
 

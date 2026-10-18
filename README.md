@@ -33,24 +33,42 @@ The current generation, **Mantis v2** (`mantis-collect`), is a single static bin
 
 </div>
 
-The original v1 tool (a Windows wrapper around Sysinternals and NirSoft utilities) remains in this repository as [`mantis.go`](mantis.go). See [Legacy v1](#legacy-v1).
-
 ## `02 // CAPABILITIES`
 
-Capabilities below are what the v2 collector offers today. Use `mantis-collect --list-artifacts` to see what is available on a given host.
+What the v2 collector offers today. Use `mantis-collect --list-artifacts` to see every source, its privilege level, its profiles and whether it is available on the host.
+
+### Acquisition profiles
+
+| Profile | Scope |
+|:--|:--|
+| **Quick Triage** | System identity, processes, network, persistence, core event logs, key execution artifacts and Defender state. Minutes, small package. |
+| **Standard DFIR** | Quick plus registry hives, every exportable event channel, NTFS metadata, user activity, RDP and USB history, browsers and security configuration. |
+| **Full Forensic** | Standard plus the remaining sources, within size limits. Sensitive sources (SAM and SECURITY hives, RDP bitmap cache, Recycle Bin content) are only collected here and only with `--confirm-sensitive`. |
+| **Custom** | Any individual sources you tick in the window or pass with `--artifacts`. |
+
+Nothing is collected unless you select it.
 
 ### Windows
 
-| Surface | What is collected | Why it matters |
+| Category | What is collected | Why it matters |
 |:--|:--|:--|
-| **Processes** | Process snapshot via the Toolhelp32 API | Spot unexpected or masquerading processes and parent/child relationships |
-| **Network** | TCP connection table via `GetExtendedTcpTable` | Identify live connections and the processes that own them |
-| **Persistence** | `Run` and `RunOnce` autorun registry keys | Find common user and machine persistence points |
-| **Event logs** | Exported channels: Application, Security, System, Windows PowerShell, PowerShell/Operational, TaskScheduler/Operational, Defender/Operational, WMI-Activity/Operational, Sysmon/Operational | Build event timelines; channels that do not exist on the host are reported as gaps |
-| **PowerShell history** | The current user's PSReadLine `ConsoleHost_history.txt` | Recover interactive commands typed in PowerShell |
-| **Recent activity** | UserAssist registry data, `Prefetch` files and the user `Recent` shortcuts | Evidence of programs and files that were executed or opened |
-| **Temporary files** | Files from `%SystemRoot%\Temp` | Transient payloads and tool staging |
-| **Disks** | Logical volume inventory | Know what storage was present at collection time |
+| **System** | OS and host identity, time zone and clock offset, physical disks, partitions and volumes, installed software, services and loaded drivers | Establish what machine and configuration the evidence came from |
+| **Processes** | Detailed snapshot with command lines, parents, owners and image hashes; embedded signature state; handle counts; virtual memory region map (metadata only) | Spot masquerading processes and injection candidates |
+| **Network** | TCP and UDP tables with owning process, interfaces, DNS cache, neighbor table and routes, proxy settings, firewall configuration and network profiles | Live connections and the processes behind them |
+| **Persistence** | Run and RunOnce keys, scheduled tasks and task cache, services, startup folders, WMI repository, IFEO, COM and Active Setup keys, Winsock providers, logon and boot keys, shell extensions, BITS jobs | The common footholds, in one pass |
+| **Registry** | SYSTEM, SOFTWARE and DEFAULT hives, per-user NTUSER.DAT and UsrClass.dat, transaction logs, with a read-only snapshot fallback for locked hives | Offline analysis of configuration, accounts and execution state |
+| **Event logs** | Every exportable channel as EVTX, plus channel configuration; analytic and debug channels that cannot be exported are listed as one explicit gap | Timelines for logons, process creation, PowerShell, tasks and more |
+| **NTFS** | `$MFT`, `$LogFile`, `$UsnJrnl`, volume metadata, Zone.Identifier streams, alternate data stream inventory, Recycle Bin metadata, read from the raw volume | File-system activity that the live file API hides |
+| **Execution** | Prefetch, Amcache, ShimCache, BAM/DAM, UserAssist, SRUM, Windows Error Reporting, compatibility assistant, PowerShell history | Evidence of programs that ran |
+| **Users** | Local accounts and groups, profiles, recent files, jump lists, timeline activity, Explorer activity, package manager data | Who was on the host and what they touched |
+| **Remote access** | Logon sessions, RDP client history and server configuration, SMB shares and sessions, SMB and WinRM configuration | Lateral movement and remote administration traces |
+| **USB** | Device history from the registry, setup logs and user mount points | Removable media that touched the host |
+| **Browsers** | History, bookmarks, extensions and configuration for Chromium-based browsers and Firefox | Web activity without touching credentials |
+| **Security** | Defender configuration, exclusions and detection history, audit policy, firewall logs, event-log configuration | Defensive posture and tampering signals |
+| **Group policy** | Applied policy registry state and local policy files | What configuration was being enforced |
+| **Shadow copies** | Read-only enumeration of existing snapshots | Know what historical copies exist |
+
+**Run as administrator** for a complete acquisition. Without elevation, protected sources are reported as `access_denied` instead of being skipped silently. Hives and raw NTFS artifacts need it.
 
 ### Linux
 
@@ -59,10 +77,22 @@ Capabilities below are what the v2 collector offers today. Use `mantis-collect -
 | **Processes** | Process snapshot from `/proc` | Running processes and command lines |
 | **Network** | TCP and UDP socket tables from `/proc/net` and a network interface inventory | Sockets and addresses present at collection time |
 | **System** | System information, `/etc/hosts`, `/etc/resolv.conf`, `/etc/fstab`, mount info | Host identity and configuration changes |
-| **Logs** | `auth.log` or `secure`, `syslog` or `messages`, `audit.log`, `kern.log`, package manager logs (dpkg, dnf, yum, pacman, emerge) | Authentication, system and software-change history; only files present are offered |
+| **Logs** | `auth.log` or `secure`, `syslog` or `messages`, `audit.log`, `kern.log`, package manager logs | Authentication, system and software-change history; only files present are offered |
 | **Zimbra** | Zimbra audit, mailbox and nginx logs when installed | Mail server investigations; never selected automatically |
 
-**Collection limits.** A run is capped by `--max-total-bytes` (default 2 GiB). Directory groups such as Temp, Prefetch and Recent are bounded in file count and depth, and truncation is recorded as a gap. Windows Security log access may require an elevated prompt.
+### Safety by design
+
+- **Read-only.** No registry writes, no hive loading, no creating or deleting shadow copies, no changes to the host.
+- **Credentials stay out.** Browser passwords, cookies and tokens, Wi-Fi key material and `lsass` memory are never collected. Values whose name suggests a secret keep name, type and size but not content.
+- **Honest outcomes.** Every source ends as `collected`, `collected_with_warnings`, `empty`, `not_present`, `not_supported`, `access_denied`, `failed` or `cancelled`. A finished run never claims a complete endpoint collection.
+- **Verified package.** The evidence package carries a manifest, per-source status, checksums and a verification result that is re-read from disk.
+- **No network.** Nothing is uploaded; everything stays in the output folder you choose.
+
+**Collection limits.** A run is capped by `--max-total-bytes` (default depends on the profile: 2 GiB quick, 16 GiB standard, 64 GiB full). Directory groups are bounded in file count and depth, and any truncation is recorded as a gap.
+
+### Validation status
+
+The Windows collectors run in CI on Windows Server 2022 and 2025 and on Windows 11 arm64 runners, and were exercised end to end, including the window and a standard-user run, in a clean Windows 11 environment. Every run builds a package and re-verifies it against planted test artifacts. Not yet exercised: physical hosts and virtual machines with a full Windows 11 client (raw NTFS reads were refused by the test sandbox), browsers holding real profiles, and behaviour under endpoint protection products. Treat releases as release candidates until those are covered.
 
 ## `03 // QUICK START`
 
@@ -73,7 +103,9 @@ Capabilities below are what the v2 collector offers today. Use `mantis-collect -
 
 ### Binaries
 
-CI builds `mantis-collect` for Windows (amd64, arm64) and Linux (amd64, arm64, 386, armv7). Release binaries are published on the [Releases](https://github.com/SergioMazariego/Mantis/releases) page from version tags, with a `SHA256SUMS` file, a per-binary SBOM and a build-provenance attestation. The first v2 release has not been published yet; until then, build from source.
+Release binaries for Windows (amd64, arm64) and Linux (amd64, arm64, 386, armv7) are on the [Releases](https://github.com/SergioMazariego/Mantis/releases) page, built by CI from version tags. Each release carries a `SHA256SUMS` file, a per-binary SBOM and a build-provenance attestation (`gh attestation verify <file> --repo SergioMazariego/Mantis`). Check the checksum before running a binary.
+
+The binaries are not code-signed yet. Because the collector uses techniques shared with forensic and attack tooling (raw volume reads, hive export, backup privileges), endpoint protection may flag or block them: sign and allowlist them for authorized use.
 
 ### Build
 
@@ -83,60 +115,40 @@ cd Mantis/v2
 go build -trimpath -o mantis-collect ./cmd/mantis-collect
 ```
 
-On Windows, name the output `mantis-collect.exe`. To cross-compile, set `GOOS` and `GOARCH`, for example `GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build ...`.
+On Windows, name the output `mantis-collect.exe`. To cross-compile, set `GOOS` and `GOARCH`, for example `GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build ...`. Process memory dumps are compiled out of the default binary; build with `-tags memdump` for authorized use.
 
 ### Run
 
 ```bash
-mantis-collect --version          # print the build version
-mantis-collect --list-artifacts   # list sources available on this host
-mantis-collect                    # choose sources: GUI on Windows, terminal menu on Linux
-mantis-collect --cli              # force the terminal menu
-mantis-collect --artifacts process-snapshot,tcp-connections,powershell-history
-mantis-collect --all              # collect every available source (explicit opt-in)
+mantis-collect --version                          # print the build version
+mantis-collect --list-artifacts                   # list sources: category, privilege, profiles, availability
+mantis-collect                                    # choose a profile or sources: window on Windows, menu on Linux
+mantis-collect --profile standard                 # quick, standard or full, without prompts
+mantis-collect --profile full --confirm-sensitive # include sensitive sources, explicitly approved
+mantis-collect --artifacts process-snapshot,tcp-connections
+mantis-collect --output D:\evidence               # package location; must be NTFS on Windows
 ```
 
-Useful options: `--case`, `--tenant`, `--actor` and `--title` label the case; `--max-total-bytes` sets the collection cap.
+Useful options: `--case`, `--tenant`, `--actor` and `--title` label the case; `--max-total-bytes` sets the collection cap; `--cli` forces the terminal menu; `--force` continues when free space looks short.
+
+On Windows the default is a dark window with profile chips, search, a category sidebar, privilege and size columns, a live execution screen with per-source status, safe cancellation (evidence already acquired is kept) and a final summary.
 
 ### Output
 
-Evidence is written to per-user directories rather than next to the executable:
+Each run writes one self-describing evidence package:
 
-| Data | Location |
-|:--|:--|
-| Case database (manifests, custody, audit chain) | `<user config dir>/Mantis/cases.sqlite` (`%AppData%\Mantis` on Windows, `~/.config/Mantis` on Linux) |
-| Raw evidence blobs, addressed by SHA-256 | `<user cache dir>/Mantis/evidence` (`%LocalAppData%\Mantis` on Windows, `~/.cache/Mantis` on Linux) |
-
-Sources that could not be collected are printed as `PARTIAL` and recorded as gaps in the case.
-
-> **Forensic note:** running a collector on a live system changes it. Document the environment and your procedure, and preserve original evidence and chain-of-custody records according to your own rules.
-
-### Legacy v1
-
-<details>
-<summary>The original Windows-only collector (<code>mantis.go</code>)</summary>
-
-<br />
-
-v1 drives external utilities and copies files into an `Artifacts` folder beside the executable. It requires [Sysinternals Suite](https://learn.microsoft.com/en-us/sysinternals/downloads/sysinternals-suite) and [NirSoft LastActivityView](https://www.nirsoft.net/utils/computer_activity_view.html), supplied as `SysinternalsSuite.zip` and `lastactivityview.zip` in the same folder as the executable.
-
-| Output | Source |
-|:--|:--|
-| Process list | `pslist64` |
-| TCP connections | `tcpvcon64` |
-| Autoruns | `autorunsc64` |
-| Recent activity | `LastActivityView` |
-| Disk list | `diskpart` |
-| Event logs, PowerShell history, `C:\Windows\Temp` | File copy with `xcopy` |
-
-```powershell
-go build -o mantis.exe mantis.go
-.\mantis.exe
+```
+Mantis-<case>-<host>-<UTC>/
+  manifest.json  acquisition-report.json  acquisition-errors.json  checksums.sha256  verification.json
+  system/  registry/  persistence/  processes/  network/  eventlogs/  ntfs/  execution/  users/
+  remote-access/  usb/  browsers/  security/  group-policy/  shadow-copies/  memory/
 ```
 
-Run it from an elevated prompt. Results are written to `Artifacts\`. v1 is kept for reference; earlier builds remain on the Releases page.
+Raw artifacts keep their original path. The manifest records the original path, size, SHA-256 and the method actually used (direct shared read, raw NTFS read, registry hive save, event-log export, API snapshot). The case database and content-addressed blobs live in `.mantis` inside the output folder.
 
-</details>
+Sources that could not be collected are recorded as gaps with the reason, never omitted.
+
+> **Forensic note:** running a collector on a live system changes it. Document the environment and your procedure, and preserve original evidence and chain-of-custody records according to your own rules.
 
 ## `04 // ARCHITECTURE`
 
@@ -150,7 +162,7 @@ flowchart LR
     subgraph MC["mantis-collect"]
         direction TB
         SEL["Operator selection<br/>opt-in, bounded plan"]
-        COL["Collectors<br/>process · network · persistence<br/>logs · history · recent activity"]
+        COL["Collectors<br/>system · processes · network · persistence<br/>registry · event logs · NTFS · execution<br/>users · USB · browsers · security"]
         ING["Ingest<br/>SHA-256 · custody · audit"]
         SEL --> COL --> ING
     end
@@ -192,13 +204,16 @@ Mantis is evolving from a collection utility toward a modern DFIR platform. The 
 | Native collection, no third-party runtime tools | Windows and Linux collectors in `mantis-collect` |
 | Evidence integrity | SHA-256 content-addressed storage, acquisition manifests, custody records, audit chain |
 | Operator control | Opt-in source selection, bounded plans, gaps recorded explicitly |
-| Packaging | Static binaries for Windows and Linux on several architectures, built by CI |
+| Evidence package | Portable manifest, per-source status, checksums and a verification result re-read from disk |
+| Acquisition profiles | Quick, Standard and Full, with sensitive sources opt-in |
+| Packaging | Static binaries for Windows and Linux on several architectures, built and attested by CI |
+| Validation | Windows collectors exercised in CI on Windows Server and Windows 11 arm64 runners, with planted test artifacts |
 
 ### Planned
 
 | Area | Direction |
 |:--|:--|
-| Parity with v1 | A LastActivityView-level recent-activity view |
+| Validation | Full Windows 11 client hosts, browsers with real profiles, behaviour under endpoint protection, code signing |
 | Extensibility | Pluggable artifact extractors and parsers |
 | Case management | Organize evidence, findings and investigators in one place; collaborative investigations |
 | Automation | Reproducible, declarative investigation workflows |
@@ -213,7 +228,7 @@ Contributions are welcome.
 - **Report a problem or propose a collector:** open an [issue](https://github.com/SergioMazariego/Mantis/issues) with the operating system, architecture, `mantis-collect --version` output and the steps to reproduce.
 - **Send a change:** fork, branch from `main`, and open a pull request that explains the change and how you tested it. Use [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `docs:`), since release notes are generated from them.
 - **Before you push**, from `v2/`: `go vet ./...` and `go test -p 1 ./...`. The `-p 1` keeps memory use low on constrained Windows hosts.
-- **Keep the repository public-safe:** enable the guard with `git config core.hooksPath .githooks`. `tools/check_public_tree.py` allows only listed paths and rejects evidence files, credentials and local paths.
+- **Keep the repository public-safe:** enable the guard with `git config core.hooksPath .githooks`. `tools/check_public_tree.py` allows only listed paths and rejects evidence files, credentials and local paths. The Windows validation workflow (`.github/workflows/validate-windows.yml`, scripts in `tools/validate/`) runs on pull requests that touch `v2/`.
 
 ### Security
 
@@ -223,7 +238,7 @@ Contributions are welcome.
 
 ## `07 // LICENSE`
 
-Mantis is released under the [GNU General Public License v3.0](LICENSE.txt). The legacy v1 tool launches third-party utilities that stay under their publishers' terms.
+Mantis is released under the [GNU General Public License v3.0](LICENSE.txt).
 
 ---
 

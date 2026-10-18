@@ -45,7 +45,7 @@ func securitySources() []collector.Source {
 	}
 	pd := expandEnv(`%ProgramData%`) + `\Microsoft\Windows Defender`
 	return []collector.Source{
-		regSnapshotSource("security-defender-config", sm("Microsoft Defender configuration and exclusions", "Defender settings, exclusions (paths/processes/extensions), real-time protection state, signature versions and policy overrides",
+		regSnapshotSource("security-defender-config", sm("Defender configuration and exclusions", "Defender settings, exclusions (paths/processes/extensions), real-time protection state, signature versions and policy overrides",
 			collector.InAll, collector.PrivAdmin, "file-activity/detectionhistory.md"), `HKLM\SOFTWARE\Microsoft\Windows Defender`, func() []regTarget {
 			return []regTarget{hklm(`SOFTWARE\Microsoft\Windows Defender`, true, 6), hklm(`SOFTWARE\Policies\Microsoft\Windows Defender`, true, 6),
 				hklm(`SOFTWARE\Microsoft\Windows Advanced Threat Protection`, true, 3), hklm(`SOFTWARE\Microsoft\Windows Security Health`, true, 4),
