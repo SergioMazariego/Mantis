@@ -8,7 +8,6 @@
 !/.goreleaser.yaml
 !/LICENSE.txt
 !/README.md
-!/mantis.go
 !/tools/
 !/v2/
 
