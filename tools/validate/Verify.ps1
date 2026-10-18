@@ -124,7 +124,13 @@ if ($ReportPath) {
   foreach ($r in $results) { $md.Add(('| {0} | {1} | {2} |' -f $r.Check, $r.Result, ($r.Note -replace '\|', '/'))) }
   $md.Add(''); $md.Add('Artifact status counts: ' + (($man.artifacts | Group-Object status | ForEach-Object { '{0}={1}' -f $_.Name, $_.Count }) -join ', '))
   $gaps = $man.artifacts | Where-Object { $_.status -notin 'collected', 'collected_with_warnings', 'empty' }
-  if ($gaps) { $md.Add(''); $md.Add('Gaps and failures (id: status):'); $gaps | ForEach-Object { $md.Add(('- {0}: {1}' -f $_.id, $_.status)) } }
+  $clip = { param($s) $s = [string]$s; if ($s.Length -gt 240) { $s.Substring(0, 240) + '...' } else { $s } }
+  if ($gaps) { $md.Add(''); $md.Add('Gaps and failures (id: status - reason):'); $gaps | ForEach-Object { $md.Add(('- {0}: {1} - {2}' -f $_.id, $_.status, (& $clip $_.error))) } }
+  $warn = $man.artifacts | Where-Object { $_.status -eq 'collected_with_warnings' }
+  if ($warn) {
+    $md.Add(''); $md.Add('Collected with warnings (id - notes):')
+    $warn | ForEach-Object { $n = if ($_.notes) { ($_.notes.PSObject.Properties | ForEach-Object { '{0}={1}' -f $_.Name, $_.Value }) -join '; ' } else { '' }; $md.Add(('- {0} - {1}' -f $_.id, (& $clip $n))) }
+  }
   $md | Set-Content -Path $ReportPath -Encoding utf8
 }
 if ($fail -gt 0) { exit 1 }
