@@ -65,6 +65,7 @@ type enrichedImage struct {
 	Description      string `json:"description,omitempty"`
 	ProductName      string `json:"product_name,omitempty"`
 	FileVersion      string `json:"file_version,omitempty"`
+	FileVersionFixed string `json:"file_version_numeric,omitempty"`
 	OriginalName     string `json:"original_filename,omitempty"`
 	Error            string `json:"error,omitempty"`
 }
@@ -219,6 +220,7 @@ func (e *imageEnricher) describe(ctx context.Context, path string) *enrichedImag
 	}
 	img.Authenticode, img.AuthenticodeCode = verifySignature(path)
 	img.Company, img.Description, img.ProductName, img.FileVersion, img.OriginalName = fileVersionStrings(path)
+	img.FileVersionFixed = fixedFileVersion(path)
 	return img
 }
 
@@ -267,6 +269,7 @@ func utf16OrUTF8(b []byte) string {
 }
 
 var taskCommandPattern = regexp.MustCompile(`(?is)<Command>\s*([^<]+?)\s*</Command>`)
+var taskComHandlerPattern = regexp.MustCompile(`(?is)<ComHandler>\s*<ClassId>\s*(\{[^<]+?\})\s*</ClassId>`)
 
 func collectEnrichEntries(ctx context.Context, w *warnings) []enrichEntry {
 	var out []enrichEntry
@@ -383,6 +386,7 @@ func collectEnrichEntries(ctx context.Context, w *warnings) []enrichEntry {
 			}
 		}
 	}
+	collectHandlerEntries(add)
 	// Scheduled tasks: the commands in the task XML
 	tasksDir := win + `\System32\Tasks`
 	count := 0
@@ -402,8 +406,15 @@ func collectEnrichEntries(ctx context.Context, w *warnings) []enrichEntry {
 			return nil
 		}
 		rel := strings.TrimPrefix(strings.TrimPrefix(path, extended(tasksDir)), `\`)
-		for _, m := range taskCommandPattern.FindAllStringSubmatch(utf16OrUTF8(data), -1) {
+		xml := utf16OrUTF8(data)
+		for _, m := range taskCommandPattern.FindAllStringSubmatch(xml, -1) {
 			add("scheduled_tasks", "Task Scheduler", `\`+rel, "System-wide", m[1])
+		}
+		// COM-handler tasks run the in-process server registered for their class
+		for _, m := range taskComHandlerPattern.FindAllStringSubmatch(xml, -1) {
+			if s := clsidServer(strings.TrimSpace(m[1])); s != "" {
+				add("scheduled_tasks", "Task Scheduler", `\`+rel, "System-wide", s)
+			}
 		}
 		return nil
 	})

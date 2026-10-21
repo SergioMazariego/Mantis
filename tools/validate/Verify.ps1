@@ -126,6 +126,11 @@ Check 'V-PERSIST: autostart entries are enriched with hash, signature, company a
   $signed = @($d.images | Where-Object { $_.authenticode }).Count
   $fixture = $d.entries | Where-Object { $_.entry -eq 'MantisFixture' } | Select-Object -First 1
   if ($d.entry_count -lt 100) { throw "only $($d.entry_count) entries" }
+  $cats = @($d.entries | ForEach-Object { $_.category } | Sort-Object -Unique)
+  foreach ($c in 'logon', 'services', 'drivers', 'scheduled_tasks', 'explorer', 'winlogon', 'winsock', 'codecs') {
+    if ($cats -notcontains $c) { throw "no autostart entries resolved for category '$c' (seen: $($cats -join ', '))" }
+  }
+  if (@($d.images | Where-Object { $_.file_version_numeric -match '^\d+\.\d+\.\d+\.\d+$' }).Count -lt 20) { throw 'numeric file versions are missing' }
   if ($withHash -lt 50) { throw "only $withHash images hashed" }
   if ($withCompany -lt 20) { throw "only $withCompany images with a company" }
   if ($signed -lt 20) { throw "only $signed images with an Authenticode result" }
