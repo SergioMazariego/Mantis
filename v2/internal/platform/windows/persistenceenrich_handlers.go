@@ -27,7 +27,7 @@ func clsidServer(clsid string) string {
 	for _, view := range []uint32{registry.WOW64_64KEY, registry.WOW64_32KEY} {
 		for _, sub := range []string{`InprocServer32`, `LocalServer32`, `InprocHandler32`} {
 			if v := regStrings(registry.LOCAL_MACHINE, `SOFTWARE\Classes\CLSID\`+clsid+`\`+sub, view); v != nil {
-				if d := v[""]; len(d) > 0 && strings.TrimSpace(d[0]) != "" {
+				if d := lookupValue(v, ""); len(d) > 0 && strings.TrimSpace(d[0]) != "" {
 					return d[0]
 				}
 			}
@@ -89,15 +89,16 @@ func collectHandlerEntries(add func(cat, loc, entry, profile, launch string)) {
 	}
 	// a handler subkey names its CLSID, or carries it as the default value, a "CLSID" value or any GUID-valued entry
 	resolveHandler := func(root registry.Key, base, sub string, view uint32) (string, string) {
+		wow := view == registry.WOW64_32KEY
 		if guidPattern.MatchString(sub) {
-			if s := clsidServer(sub); s != "" {
+			if s := clsidServerView(sub, wow); s != "" {
 				return sub, s
 			}
 		}
 		vals := regStrings(root, base+`\`+sub, view)
 		for _, name := range []string{"", "CLSID"} {
-			if d := vals[name]; len(d) > 0 && guidPattern.MatchString(strings.TrimSpace(d[0])) {
-				if s := clsidServer(strings.TrimSpace(d[0])); s != "" {
+			if d := lookupValue(vals, name); len(d) > 0 && guidPattern.MatchString(strings.TrimSpace(d[0])) {
+				if s := clsidServerView(strings.TrimSpace(d[0]), wow); s != "" {
 					return strings.TrimSpace(d[0]), s
 				}
 			}
@@ -105,7 +106,7 @@ func collectHandlerEntries(add func(cat, loc, entry, profile, launch string)) {
 		for _, ds := range vals {
 			for _, d := range ds {
 				if guidPattern.MatchString(strings.TrimSpace(d)) {
-					if s := clsidServer(strings.TrimSpace(d)); s != "" {
+					if s := clsidServerView(strings.TrimSpace(d), wow); s != "" {
 						return strings.TrimSpace(d), s
 					}
 				}
@@ -125,7 +126,7 @@ func collectHandlerEntries(add func(cat, loc, entry, profile, launch string)) {
 			for n, ds := range regStrings(registry.LOCAL_MACHINE, hk.path, v.v) {
 				for _, c := range append([]string{n}, ds...) {
 					if c = strings.TrimSpace(c); guidPattern.MatchString(c) {
-						if s := clsidServer(c); s != "" {
+						if s := clsidServerView(c, v.v == registry.WOW64_32KEY); s != "" {
 							add(hk.category, loc, n+" "+c, "System-wide", s)
 						}
 					}
@@ -159,13 +160,13 @@ func collectHandlerEntries(add func(cat, loc, entry, profile, launch string)) {
 	for _, v := range views {
 		gp := `SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\GpExtensions`
 		for _, sub := range regSubKeys(registry.LOCAL_MACHINE, gp, v.v) {
-			if d := regStrings(registry.LOCAL_MACHINE, gp+`\`+sub, v.v)["DllName"]; len(d) > 0 {
+			if d := lookupValue(regStrings(registry.LOCAL_MACHINE, gp+`\`+sub, v.v), "DllName"); len(d) > 0 {
 				add("winlogon", locate(gp, v.prefix), sub, "System-wide", d[0])
 			}
 		}
 		as := `SOFTWARE\Microsoft\Active Setup\Installed Components`
 		for _, sub := range regSubKeys(registry.LOCAL_MACHINE, as, v.v) {
-			if d := regStrings(registry.LOCAL_MACHINE, as+`\`+sub, v.v)["StubPath"]; len(d) > 0 {
+			if d := lookupValue(regStrings(registry.LOCAL_MACHINE, as+`\`+sub, v.v), "StubPath"); len(d) > 0 {
 				add("logon", locate(as, v.prefix), sub, "System-wide", d[0])
 			}
 		}
@@ -190,18 +191,18 @@ func collectHandlerEntries(add func(cat, loc, entry, profile, launch string)) {
 	for _, cat := range []string{`NameSpace_Catalog5\Catalog_Entries`, `NameSpace_Catalog5\Catalog_Entries64`} {
 		base := ws + `\` + cat
 		for _, sub := range regSubKeys(registry.LOCAL_MACHINE, base, registry.WOW64_64KEY) {
-			if d := regStrings(registry.LOCAL_MACHINE, base+`\`+sub, registry.WOW64_64KEY)["LibraryPath"]; len(d) > 0 {
+			if d := lookupValue(regStrings(registry.LOCAL_MACHINE, base+`\`+sub, registry.WOW64_64KEY), "LibraryPath"); len(d) > 0 {
 				add("winsock", `HKLM\`+base, sub, "System-wide", d[0])
 			}
 		}
 	}
 	// Network providers: Order\ProviderOrder lists service names, each with a ProviderPath
-	if order := regStrings(registry.LOCAL_MACHINE, `SYSTEM\CurrentControlSet\Control\NetworkProvider\Order`, registry.WOW64_64KEY)["ProviderOrder"]; len(order) > 0 {
+	if order := lookupValue(regStrings(registry.LOCAL_MACHINE, `SYSTEM\CurrentControlSet\Control\NetworkProvider\Order`, registry.WOW64_64KEY), "ProviderOrder"); len(order) > 0 {
 		for _, p := range strings.Split(order[0], ",") {
 			if p = strings.TrimSpace(p); p == "" {
 				continue
 			}
-			if d := regStrings(registry.LOCAL_MACHINE, `SYSTEM\CurrentControlSet\Services\`+p+`\NetworkProvider`, registry.WOW64_64KEY)["ProviderPath"]; len(d) > 0 {
+			if d := lookupValue(regStrings(registry.LOCAL_MACHINE, `SYSTEM\CurrentControlSet\Services\`+p+`\NetworkProvider`, registry.WOW64_64KEY), "ProviderPath"); len(d) > 0 {
 				add("network_providers", `HKLM\SYSTEM\CurrentControlSet\Control\NetworkProvider\Order`, p, "System-wide", d[0])
 			}
 		}
@@ -209,7 +210,7 @@ func collectHandlerEntries(add func(cat, loc, entry, profile, launch string)) {
 	// file-association commands that decide what runs when an executable type is opened
 	for _, class := range []string{"exefile", "cmdfile", "batfile", "comfile", "piffile", "scrfile", "htmlfile"} {
 		path := `SOFTWARE\Classes\` + class + `\Shell\Open\Command`
-		if d := regStrings(registry.LOCAL_MACHINE, path, registry.WOW64_64KEY)[""]; len(d) > 0 {
+		if d := lookupValue(regStrings(registry.LOCAL_MACHINE, path, registry.WOW64_64KEY), ""); len(d) > 0 {
 			add("image_hijacks", `HKLM\`+path+`\(Default)`, class, "System-wide", d[0])
 		}
 	}
@@ -263,4 +264,77 @@ func fixedFileVersion(path string) string {
 	}
 	ms, ls := binary.LittleEndian.Uint32(buf[off+8:]), binary.LittleEndian.Uint32(buf[off+12:])
 	return fmt.Sprintf("%d.%d.%d.%d", ms>>16, ms&0xFFFF, ls>>16, ls&0xFFFF)
+}
+
+// lookupValue finds a registry value by name ignoring case, as the registry itself does.
+func lookupValue(m map[string][]string, name string) []string {
+	if v, ok := m[name]; ok {
+		return v
+	}
+	for k, v := range m {
+		if strings.EqualFold(k, name) {
+			return v
+		}
+	}
+	return nil
+}
+
+// wowPath maps a System32 path to its SysWOW64 counterpart when that file exists: the 32-bit view of the
+// registry names files that the file system redirects to SysWOW64.
+func wowPath(p string) string {
+	low := strings.ToLower(p)
+	if i := strings.Index(low, `\system32\`); i >= 0 {
+		cand := p[:i] + `\SysWOW64\` + p[i+len(`\system32\`):]
+		if fileExists(cand) {
+			return cand
+		}
+	}
+	return p
+}
+
+// clsidServerView resolves a CLSID preferring one registry view (the 32-bit view for Wow6432Node handlers).
+func clsidServerView(clsid string, wow bool) string {
+	views := []uint32{registry.WOW64_64KEY, registry.WOW64_32KEY}
+	if wow {
+		views = []uint32{registry.WOW64_32KEY, registry.WOW64_64KEY}
+	}
+	for _, view := range views {
+		for _, sub := range []string{`InprocServer32`, `LocalServer32`, `InprocHandler32`} {
+			if v := regStrings(registry.LOCAL_MACHINE, `SOFTWARE\Classes\CLSID\`+clsid+`\`+sub, view); v != nil {
+				if d := lookupValue(v, ""); len(d) > 0 && strings.TrimSpace(d[0]) != "" {
+					if wow {
+						return wowPath(expandEnv(d[0]))
+					}
+					return d[0]
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// collectProviderEntries adds the remaining provider-style locations a live scan lists.
+func collectProviderEntries(add func(cat, loc, entry, profile, launch string)) {
+	win := windowsDir()
+	// Terminal Server startup programs: names without a path, resolved in System32
+	if d := lookupValue(regStrings(registry.LOCAL_MACHINE, `SYSTEM\CurrentControlSet\Control\Terminal Server\Wds\rdpwd`, registry.WOW64_64KEY), "StartupPrograms"); len(d) > 0 {
+		for _, part := range strings.FieldsFunc(strings.Join(d, ","), func(r rune) bool { return r == ',' || r == ' ' }) {
+			add("logon", `HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\Wds\rdpwd\StartupPrograms`, part, "System-wide", part)
+		}
+	}
+	// SecurityProviders\SecurityProviders: comma separated DLL names
+	if d := lookupValue(regStrings(registry.LOCAL_MACHINE, `SYSTEM\CurrentControlSet\Control\SecurityProviders`, registry.WOW64_64KEY), "SecurityProviders"); len(d) > 0 {
+		for _, part := range strings.Split(strings.Join(d, ","), ",") {
+			if part = strings.TrimSpace(part); part != "" {
+				add("lsa", `HKLM\SYSTEM\CurrentControlSet\Control\SecurityProviders\SecurityProviders`, part, "System-wide", filepath.Join(win, "System32", part))
+			}
+		}
+	}
+	// Print providers: each subkey names a provider DLL in its Name value
+	pp := `SYSTEM\CurrentControlSet\Control\Print\Providers`
+	for _, sub := range regSubKeys(registry.LOCAL_MACHINE, pp, registry.WOW64_64KEY) {
+		if d := lookupValue(regStrings(registry.LOCAL_MACHINE, pp+`\`+sub, registry.WOW64_64KEY), "Name"); len(d) > 0 {
+			add("print_monitors", `HKLM\`+pp, sub, "System-wide", filepath.Join(win, "System32", d[0]))
+		}
+	}
 }

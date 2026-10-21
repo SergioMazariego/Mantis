@@ -309,8 +309,8 @@ func collectEnrichEntries(ctx context.Context, w *warnings) []enrichEntry {
 	}
 	// Winlogon, AppInit, LSA, KnownDLLs, codecs, print monitors
 	hk(registry.LOCAL_MACHINE, "HKLM", `SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon`, registry.WOW64_64KEY, func(loc string, vals map[string][]string) {
-		for _, n := range []string{"Shell", "Userinit", "Taskman", "VmApplet", "AlternateShell"} {
-			for _, s := range vals[n] {
+		for _, n := range []string{"Shell", "Userinit", "Taskman", "VMApplet", "AlternateShell"} {
+			for _, s := range lookupValue(vals, n) {
 				for _, part := range strings.Split(s, ",") {
 					add("winlogon", loc, n, "System-wide", part)
 				}
@@ -319,7 +319,7 @@ func collectEnrichEntries(ctx context.Context, w *warnings) []enrichEntry {
 	})
 	for _, v := range views {
 		hk(registry.LOCAL_MACHINE, "HKLM", `SOFTWARE\Microsoft\Windows NT\CurrentVersion\Windows`, v.v, func(loc string, vals map[string][]string) {
-			for _, s := range vals["AppInit_DLLs"] {
+			for _, s := range lookupValue(vals, "AppInit_DLLs") {
 				for _, part := range strings.FieldsFunc(s, func(r rune) bool { return r == ',' || r == ' ' }) {
 					add("appinit", loc, "AppInit_DLLs", "System-wide", part)
 				}
@@ -327,13 +327,19 @@ func collectEnrichEntries(ctx context.Context, w *warnings) []enrichEntry {
 		})
 		hk(registry.LOCAL_MACHINE, "HKLM", `SOFTWARE\Microsoft\Windows NT\CurrentVersion\Drivers32`, v.v, func(loc string, vals map[string][]string) {
 			for n, ss := range vals {
-				add("codecs", loc, n, "System-wide", strings.Join(ss, " "))
+				launch := strings.Join(ss, " ")
+				if v.wow != "" && !strings.ContainsAny(launch, `\/`) { // 32-bit view: bare names live in SysWOW64
+					if p := filepath.Join(win, "SysWOW64", strings.TrimSpace(launch)); fileExists(p) {
+						launch = p
+					}
+				}
+				add("codecs", loc, n, "System-wide", launch)
 			}
 		})
 	}
 	hk(registry.LOCAL_MACHINE, "HKLM", `SYSTEM\CurrentControlSet\Control\Lsa`, registry.WOW64_64KEY, func(loc string, vals map[string][]string) {
 		for _, n := range []string{"Authentication Packages", "Notification Packages", "Security Packages"} {
-			for _, s := range vals[n] {
+			for _, s := range lookupValue(vals, n) {
 				for _, part := range strings.FieldsFunc(s, func(r rune) bool { return r == ',' || r == ' ' || r == '\x00' }) {
 					if !strings.Contains(part, ".") {
 						part += ".dll"
@@ -355,7 +361,7 @@ func collectEnrichEntries(ctx context.Context, w *warnings) []enrichEntry {
 	})
 	for _, name := range regSubKeys(registry.LOCAL_MACHINE, `SYSTEM\CurrentControlSet\Control\Print\Monitors`, registry.WOW64_64KEY) {
 		hk(registry.LOCAL_MACHINE, "HKLM", `SYSTEM\CurrentControlSet\Control\Print\Monitors\`+name, registry.WOW64_64KEY, func(loc string, vals map[string][]string) {
-			for _, s := range vals["Driver"] {
+			for _, s := range lookupValue(vals, "Driver") {
 				add("print_monitors", loc, name, "System-wide", filepath.Join(win, "System32", s))
 			}
 		})
@@ -367,7 +373,7 @@ func collectEnrichEntries(ctx context.Context, w *warnings) []enrichEntry {
 			return out
 		}
 		vals := regStrings(registry.LOCAL_MACHINE, svcRoot+`\`+name, registry.WOW64_64KEY)
-		img := vals["ImagePath"]
+		img := lookupValue(vals, "ImagePath")
 		if len(img) == 0 {
 			continue
 		}
@@ -381,12 +387,13 @@ func collectEnrichEntries(ctx context.Context, w *warnings) []enrichEntry {
 		loc := `HKLM\` + svcRoot
 		add(cat, loc, name, "System-wide", img[0])
 		if p := regStrings(registry.LOCAL_MACHINE, svcRoot+`\`+name+`\Parameters`, registry.WOW64_64KEY); p != nil {
-			for _, d := range p["ServiceDll"] {
+			for _, d := range lookupValue(p, "ServiceDll") {
 				add(cat, loc, name+" (ServiceDll)", "System-wide", d)
 			}
 		}
 	}
 	collectHandlerEntries(add)
+	collectProviderEntries(add)
 	// Scheduled tasks: the commands in the task XML
 	tasksDir := win + `\System32\Tasks`
 	count := 0

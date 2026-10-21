@@ -42,3 +42,16 @@ func TestUTF16OrUTF8DecodesTaskFiles(t *testing.T) {
 		t.Errorf("task command not extracted: %v", m)
 	}
 }
+
+func TestLookupValueIgnoresCase(t *testing.T) {
+	m := map[string][]string{"ServiceDLL": {`C:\x.dll`}, "": {"default"}}
+	if got := lookupValue(m, "ServiceDll"); len(got) != 1 || got[0] != `C:\x.dll` {
+		t.Errorf("case-insensitive lookup failed: %v", got)
+	}
+	if got := lookupValue(m, ""); len(got) != 1 || got[0] != "default" {
+		t.Errorf("default value lookup failed: %v", got)
+	}
+	if lookupValue(m, "missing") != nil {
+		t.Error("a missing value must return nil")
+	}
+}

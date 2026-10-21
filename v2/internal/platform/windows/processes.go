@@ -267,7 +267,11 @@ func verifySignature(path string) (string, string) {
 	case 0:
 		return "valid", code
 	case 0x800B0100:
-		return "no embedded signature (may be catalog-signed)", code
+		// most Windows binaries are catalog-signed: look the file hash up in the catalog database
+		if st, cc, found := verifyCatalogSignature(path); found {
+			return st, cc
+		}
+		return "unsigned (no embedded signature and no catalog entry)", code
 	case 0x80096010:
 		return "signature present but digest mismatch (modified file)", code
 	case 0x800B0101:

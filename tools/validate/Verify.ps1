@@ -131,6 +131,10 @@ Check 'V-PERSIST: autostart entries are enriched with hash, signature, company a
     if ($cats -notcontains $c) { throw "no autostart entries resolved for category '$c' (seen: $($cats -join ', '))" }
   }
   if (@($d.images | Where-Object { $_.file_version_numeric -match '^\d+\.\d+\.\d+\.\d+$' }).Count -lt 20) { throw 'numeric file versions are missing' }
+  $catalog = @($d.images | Where-Object { $_.authenticode -eq 'valid (catalog-signed)' }).Count
+  if ($catalog -lt 100) { throw "only $catalog images verified through a security catalog" }
+  $svcDll = @($d.entries | Where-Object { $_.entry -like '*(ServiceDll)' }).Count
+  if ($svcDll -lt 50) { throw "only $svcDll service DLL entries" }
   if ($withHash -lt 50) { throw "only $withHash images hashed" }
   if ($withCompany -lt 20) { throw "only $withCompany images with a company" }
   if ($signed -lt 20) { throw "only $signed images with an Authenticode result" }
