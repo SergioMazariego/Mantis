@@ -73,6 +73,14 @@ func executionSources() []collector.Source {
 			return []regTarget{hklm(`SOFTWARE\Microsoft\Windows NT\CurrentVersion\SRUM`, true, 3)}
 		}))
 
+	// Kernel crash dumps (blue screens). They can hold fragments of kernel memory, so they are sensitive and Full-only.
+	out = append(out, sensitiveFullOnly(requiresAdmin(walkGroup("execution-crash-dumps",
+		em("Kernel crash dumps (Minidump, LiveKernelReports)", "Small kernel dumps written after a blue screen or live kernel event: stop code, drivers loaded, faulting stack. MEMORY.DMP (full memory) is not collected",
+			collector.InFullOnly, collector.PrivAdmin), win+`\Minidump | `+win+`\LiveKernelReports`, walkSpec{
+			Roots: staticRoots(win+`\Minidump`, win+`\LiveKernelReports`), MaxDepth: 3, MaxFiles: 200, FileMax: 512 << 20,
+			Match: func(_, name string) bool { return strings.HasSuffix(strings.ToLower(name), ".dmp") }})),
+		"kernel dumps can contain fragments of memory; collect only with explicit authorization"))
+
 	out = append(out, walkGroup("execution-wer",
 		em("Windows Error Reporting reports", "WER report metadata (.wer, small XML/text): application crashes with module versions and timestamps. Memory dump files are deliberately excluded",
 			collector.InStdFull, collector.PrivUser, "execution/wer-files.md"), expandEnv(`%ProgramData%`)+`\Microsoft\Windows\WER | %LOCALAPPDATA%\Microsoft\Windows\WER`, walkSpec{

@@ -152,6 +152,7 @@ var coreChannels = []string{
 	"Microsoft-Windows-Windows Firewall With Advanced Security/Firewall", "Microsoft-Windows-GroupPolicy/Operational",
 	"Microsoft-Windows-WLAN-AutoConfig/Operational", "Microsoft-Windows-SMBClient/Security", "Microsoft-Windows-SMBServer/Security",
 	"Microsoft-Windows-Bits-Client/Operational", "Microsoft-Windows-Shell-Core/Operational",
+	"Microsoft-Windows-NetworkProfile/Operational",
 }
 
 func eventlogSources() []collector.Source {
@@ -251,7 +252,24 @@ func eventlogSources() []collector.Source {
 		return map[string]any{"channels": out}, nil
 	})
 	cfgSrc.Meta.Privilege = collector.PrivUser
-	return []collector.Source{core, all, cfgSrc}
+
+	// Byte-for-byte copies of the .evtx files on disk (shared read, raw NTFS fallback). EvtExportLog rewrites record
+	// headers, so these keep the original chunk layout for carving and header-level analysis. Archive-*.evtx files are
+	// rotated logs that no live channel exports, so they are the only copy of that history.
+	logsDir := windowsDir() + `\System32\winevt\Logs`
+	isArchive := func(n string) bool { return strings.HasPrefix(strings.ToLower(n), "archive-") }
+	isEvtx := func(n string) bool { return strings.HasSuffix(strings.ToLower(n), ".evtx") }
+	rawMeta := baseMeta("Event log files (byte copy, archived logs)", "Archive-*.evtx files created by log auto-backup: rotated history that is no longer part of any live channel",
+		"eventlogs", collector.PrivAdmin, collector.InStdFull, "execution/evtx-4688-process-created.md")
+	archives := requiresAdmin(walkGroup("evtx-archive-files", rawMeta, logsDir, walkSpec{
+		Roots: staticRoots(logsDir), MaxDepth: -1, MaxFiles: 2000, FileMax: 2 << 30,
+		Match: func(_, n string) bool { return isEvtx(n) && isArchive(n) }}))
+	rawAll := baseMeta("Event log files (byte copy)", "Every .evtx file in winevt\\Logs copied as it is on disk, in addition to the API export (original headers and chunk layout preserved)",
+		"eventlogs", collector.PrivAdmin, collector.InFullOnly, "execution/evtx-4688-process-created.md")
+	rawFiles := requiresAdmin(walkGroup("evtx-raw-files", rawAll, logsDir, walkSpec{
+		Roots: staticRoots(logsDir), MaxDepth: -1, MaxFiles: 4000, FileMax: 2 << 30,
+		Match: func(_, n string) bool { return isEvtx(n) && !isArchive(n) }}))
+	return []collector.Source{core, all, cfgSrc, archives, rawFiles}
 }
 
 func evtxChannelSource(name string, parent collector.Meta) collector.Source {

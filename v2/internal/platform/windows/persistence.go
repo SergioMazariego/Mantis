@@ -101,6 +101,47 @@ func persistenceSources() []collector.Source {
 			return append(t, perLoadedUser(`Software\Microsoft\Active Setup\Installed Components`, true, 2)...)
 		}))
 
+	// Autostart extensibility points that a live Autoruns scan inspects and the sources above do not:
+	// credential providers, protocol handlers, shell handlers, DirectShow filter instances and image hijacks.
+	out = append(out, regSnapshotSource("persistence-extensibility-points",
+		pm("Credential providers, protocol/shell handlers and codec filters", "Credential Providers/Filters and PLAP, URL protocol handlers, Directory/Folder/AllFileSystemObjects shell handlers, DirectShow filter categories, executable file-association commands and IE UrlSearchHooks (64-bit and 32-bit views, loaded users)",
+			collector.InAll, collector.PrivUser),
+		`HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication | HKLM\SOFTWARE\Classes\{Protocols,*,Directory,Folder,CLSID} | HKU\<SID>\...\UrlSearchHooks`, func() []regTarget {
+			var t []regTarget
+			for _, k := range []string{
+				`SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\Credential Providers`,
+				`SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\Credential Provider Filters`,
+				`SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\PLAP Providers`,
+				`SOFTWARE\Classes\Protocols\Handler`,
+				`SOFTWARE\Classes\AllFileSystemObjects\ShellEx\ContextMenuHandlers`,
+				`SOFTWARE\Classes\AllFileSystemObjects\ShellEx\PropertySheetHandlers`,
+				`SOFTWARE\Classes\Directory\ShellEx\CopyHookHandlers`,
+				`SOFTWARE\Classes\Directory\ShellEx\PropertySheetHandlers`,
+				`SOFTWARE\Classes\Directory\ShellEx\DragDropHandlers`,
+				`SOFTWARE\Classes\Folder\ShellEx\DragDropHandlers`,
+				`SOFTWARE\Classes\Folder\ShellEx\ContextMenuHandlers`,
+				`SOFTWARE\Classes\Drive\ShellEx\ContextMenuHandlers`,
+				// DirectShow filter categories (video/audio compressors and decompressors)
+				`SOFTWARE\Classes\CLSID\{083863F1-70DE-11d0-BD40-00A0C911CE86}\Instance`,
+				`SOFTWARE\Classes\CLSID\{7ED96837-96F0-4812-B211-F13C24117ED3}\Instance`,
+				`SOFTWARE\Classes\CLSID\{AC757296-3522-4E11-9862-C17BE5A1767E}\Instance`,
+				`SOFTWARE\Classes\CLSID\{DA4E3DA0-D07D-11d0-BD50-00A0C911CE86}\Instance`,
+				`SOFTWARE\Classes\CLSID\{33D9A760-90C8-11d0-BD43-00A0C911CE86}\Instance`,
+				`SOFTWARE\Classes\CLSID\{33D9A761-90C8-11d0-BD43-00A0C911CE86}\Instance`,
+				// commands run when an executable or script type is opened (Image Hijacks)
+				`SOFTWARE\Classes\exefile\Shell\Open\Command`, `SOFTWARE\Classes\cmdfile\Shell\Open\Command`,
+				`SOFTWARE\Classes\batfile\Shell\Open\Command`, `SOFTWARE\Classes\comfile\Shell\Open\Command`,
+				`SOFTWARE\Classes\piffile\Shell\Open\Command`, `SOFTWARE\Classes\scrfile\Shell\Open\Command`,
+				`SOFTWARE\Classes\htmlfile\Shell\Open\Command`, `SOFTWARE\Classes\.exe`, `SOFTWARE\Classes\.cmd`,
+				`SOFTWARE\Classes\.bat`, `SOFTWARE\Classes\.com`, `SOFTWARE\Classes\.scr`,
+			} {
+				t = append(t, both(k, true, 2)...)
+			}
+			t = append(t, perLoadedUser(`Software\Microsoft\Internet Explorer\UrlSearchHooks`, true, 1)...)
+			t = append(t, perLoadedUser(`Software\Classes\exefile\Shell\Open\Command`, true, 1)...)
+			return t
+		}))
+
 	out = append(out, regSnapshotSource("persistence-winsock-providers",
 		pm("Winsock LSP and namespace providers", "Layered service provider and namespace provider catalogs (network-stack persistence)", collector.InStdFull, collector.PrivUser),
 		`HKLM\SYSTEM\CurrentControlSet\Services\WinSock2\Parameters`, func() []regTarget {
@@ -148,5 +189,6 @@ func persistenceSources() []collector.Source {
 		pm("BITS transfer job database", "Background Intelligent Transfer Service queue (qmgr*.dat / qmgr.db and logs): URLs, destinations, notification commands", collector.InStdFull, collector.PrivAdmin),
 		expandEnv(`%ProgramData%`)+`\Microsoft\Network\Downloader`, walkSpec{
 			Roots: staticRoots(expandEnv(`%ProgramData%`) + `\Microsoft\Network\Downloader`), MaxDepth: -1, MaxFiles: 50, FileMax: 1 << 30}))
+	out = append(out, persistenceEnrichedSource())
 	return out
 }

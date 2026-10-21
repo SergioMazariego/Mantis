@@ -115,6 +115,53 @@ Check 'V-SEC: Defender configuration dump present' { Art 'security-defender-conf
 Check 'V-BROWSER: no credential/cookie stores in the package' {
   -not (Get-ChildItem $Package -Recurse -File | Where-Object { $_.Name -in 'Login Data', 'Cookies', 'Web Data', 'Local State', 'key4.db', 'logins.json', 'cookies.sqlite' })
 }
+Check 'V-PERSIST: extensibility points (credential providers, protocol handlers, DirectShow filters) are dumped' {
+  $t = Text 'persistence\persistence-extensibility-points.json'
+  ($t -match 'Credential Providers') -and ($t -match 'Protocols') -and ($t -match 'Instance')
+}
+Check 'V-PERSIST: autostart entries are enriched with hash, signature, company and version' {
+  $d = (Text 'persistence\persistence-enriched.json' | ConvertFrom-Json).data
+  $withHash = @($d.images | Where-Object { $_.sha256 -match '^[0-9a-f]{64}$' -and $_.md5 -and $_.sha1 }).Count
+  $withCompany = @($d.images | Where-Object { $_.company }).Count
+  $signed = @($d.images | Where-Object { $_.authenticode }).Count
+  $fixture = $d.entries | Where-Object { $_.entry -eq 'MantisFixture' } | Select-Object -First 1
+  if ($d.entry_count -lt 100) { throw "only $($d.entry_count) entries" }
+  if ($withHash -lt 50) { throw "only $withHash images hashed" }
+  if ($withCompany -lt 20) { throw "only $withCompany images with a company" }
+  if ($signed -lt 20) { throw "only $signed images with an Authenticode result" }
+  if (-not $fixture -or $fixture.image_path -notmatch 'notepad\.exe') { throw 'the HKCU Run fixture was not resolved to notepad.exe' }
+  $true
+}
+Check 'V-PROC: performance counters (priority, CPU times, virtual size, pools, threads) for every process' {
+  $d = (Text 'processes\processes-performance.json' | ConvertFrom-Json).data
+  if ($d.process_count -lt 20 -or $d.thread_count -le $d.process_count) { throw "processes=$($d.process_count) threads=$($d.thread_count)" }
+  $ping = $d.processes | Where-Object { $_.name -like 'ping.exe' } | Select-Object -First 1
+  if (-not $ping) { throw 'ping fixture process not found' }
+  # the fixture process may still be running: its live base priority must equal what was recorded (it is inherited, so it varies by host)
+  $live = Get-Process -Id $ping.pid -ErrorAction SilentlyContinue
+  if ($live -and $live.BasePriority -ne $ping.base_priority) { throw "base priority $($ping.base_priority) recorded but $($live.BasePriority) live" }
+  if ($ping.base_priority -lt 1 -or $ping.virtual_bytes -le 0 -or $ping.private_bytes -le 0 -or @($ping.thread_detail).Count -lt 1) { throw ('ping counters look wrong: ' + ($ping | Select-Object name, base_priority, virtual_bytes, private_bytes, threads | ConvertTo-Json -Compress)) }
+  $detailed = (Text 'processes\processes-detailed.json' | ConvertFrom-Json).data.processes
+  $pids = @{}; foreach ($p in $d.processes) { $pids[[string]$p.pid] = $p }
+  $common = @($detailed | Where-Object { $pids.ContainsKey([string]$_.pid) }).Count
+  if ($common -lt 0.8 * $detailed.Count) { throw "only $common of $($detailed.Count) detailed processes appear in the performance snapshot" }
+  $true
+}
+Check 'V-SYSTEM: disks report offline, read_only and dynamic state' {
+  $disk = ((Text 'system\system-disks.json' | ConvertFrom-Json).data.physical_disks) | Select-Object -First 1
+  $disk -and ($disk.PSObject.Properties.Name -contains 'offline') -and ($disk.PSObject.Properties.Name -contains 'read_only')
+}
+if ($Profile -eq 'full') {
+  Check 'V-EVT: byte copies of the .evtx files keep the ElfFile signature' {
+    $f = Get-ChildItem (Join-Path $Package 'eventlogs') -Recurse -File -Filter 'Application.evtx' | Where-Object { $_.FullName -match 'winevt' } | Select-Object -First 1
+    if (-not $f) { throw 'no byte copy of Application.evtx in the package' }
+    [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($f.FullName)[0..6]) -eq 'ElfFile'
+  }
+  Check 'V-EVT: archived and crash-dump sources report an honest outcome (never failed)' {
+    $bad = $man.artifacts | Where-Object { $_.id -like 'evtx-archive-files*' -or $_.id -like 'execution-crash-dumps*' } | Where-Object { $_.status -eq 'failed' }
+    -not $bad
+  }
+}
 foreach ($br in @(
     # Headless Chromium on CI images does not record the visit (and Chrome creates no profile at all), so for
     # Chromium browsers the check is structural: the profile exists and its History database was collected.

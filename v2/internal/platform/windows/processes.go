@@ -476,5 +476,5 @@ func processSources() []collector.Source {
 	list.Meta.SideEffects = "reads executable files to hash them (updates last-access times on volumes where that is enabled)"
 	handles := withDetect(jsonSource("processes-handle-table", m("Handle table (counts per process/type)", "System handle table aggregated per process and object type index", collector.InFullOnly, collector.PrivDebug),
 		"ntquerysysteminformation", "api://handle-table", handleTable), available)
-	return []collector.Source{list, handles}
+	return []collector.Source{list, handles, procPerfSource()}
 }
