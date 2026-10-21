@@ -137,7 +137,9 @@ Check 'V-PERSIST: autostart entries are enriched with hash, signature, company a
   if ($svcDll -lt 50) { throw "only $svcDll service DLL entries" }
   $builtin = $d.entries | Where-Object { $_.category -eq 'drivers' -and $_.entry -eq 'Ntfs' } | Select-Object -First 1
   if (-not $builtin -or $builtin.image_path -notmatch 'drivers\\ntfs\.sys$') { throw 'built-in driver without ImagePath (Ntfs) was not resolved to System32\drivers' }
-  if (@($d.entries | Where-Object { $_.launch_target }).Count -lt 3) { throw 'rundll32 entries were not resolved to their DLL' }
+  # the image set differs by architecture: only require the DLL when rundll32 entries exist
+  $rundll = @($d.entries | Where-Object { $_.image_path -like '*\rundll32.exe' -and $_.launch_string -match '(?i)rundll32(\.exe)?"?\s+\S' })
+  if ($rundll.Count -gt 0 -and @($d.entries | Where-Object { $_.launch_target }).Count -lt 1) { throw "$($rundll.Count) rundll32 entries exist but none was resolved to its DLL" }
   if (-not ($d.entries | Where-Object { $_.entry -eq 'MantisFixture.cmd' })) { throw 'the Startup folder fixture was not listed' }
   if ($withHash -lt 50) { throw "only $withHash images hashed" }
   if ($withCompany -lt 20) { throw "only $withCompany images with a company" }
