@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"os"
 	"runtime"
@@ -290,6 +291,43 @@ func openNoAccess(path string) (windows.Handle, error) {
 	return windows.CreateFile(p, 0, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE, nil, windows.OPEN_EXISTING, 0, 0)
 }
 
+// diskAttributes reads the disk attribute bits (offline, read-only). Windows documents the control code with
+// read access; the variant without access bits is tried as well so an unexpected definition does not hide the state.
+func diskAttributes(meta windows.Handle, path string) (uint64, error) {
+	codes := []uint32{ioctlDiskGetAttributes, 0x000700F0}
+	var lastErr error
+	try := func(h windows.Handle) (uint64, bool) {
+		for _, code := range codes {
+			out, err := deviceIoctl(h, code, nil, 16)
+			if err == nil && len(out) >= 16 {
+				return binary.LittleEndian.Uint64(out[8:]), true
+			}
+			if err != nil {
+				lastErr = err
+			}
+		}
+		return 0, false
+	}
+	if v, ok := try(meta); ok {
+		return v, nil
+	}
+	p, err := windows.UTF16PtrFromString(path)
+	if err == nil {
+		if rh, err := windows.CreateFile(p, windows.GENERIC_READ, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE, nil, windows.OPEN_EXISTING, 0, 0); err == nil {
+			defer windows.CloseHandle(rh)
+			if v, ok := try(rh); ok {
+				return v, nil
+			}
+		} else {
+			lastErr = err
+		}
+	}
+	if lastErr == nil {
+		lastErr = errors.New("no data returned")
+	}
+	return 0, lastErr
+}
+
 func diskInventory(w *warnings) map[string]any {
 	var disks []physicalDisk
 	for i := 0; i < 64; i++ {
@@ -349,11 +387,13 @@ func diskInventory(w *warnings) map[string]any {
 		} else if err != nil {
 			d.Errors = append(d.Errors, "layout: "+err.Error())
 		}
-		// GET_DISK_ATTRIBUTES: Version, Reserved, Attributes (bit 0 offline, bit 1 read-only)
-		if out, err := deviceIoctl(h, ioctlDiskGetAttributes, nil, 16); err == nil && len(out) >= 16 {
-			attr := binary.LittleEndian.Uint64(out[8:])
+		// GET_DISK_ATTRIBUTES: Version, Reserved, Attributes (bit 0 offline, bit 1 read-only). The query may need a
+		// read handle (administrator): try the metadata handle first, then a read handle.
+		if attr, err := diskAttributes(h, path); err == nil {
 			off, ro := attr&1 != 0, attr&2 != 0
 			d.Offline, d.ReadOnly = &off, &ro
+		} else {
+			d.Errors = append(d.Errors, "attributes: "+err.Error())
 		}
 		dyn := false
 		for _, pi := range d.Partitions {

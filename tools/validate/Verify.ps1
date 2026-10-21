@@ -137,7 +137,10 @@ Check 'V-PROC: performance counters (priority, CPU times, virtual size, pools, t
   if ($d.process_count -lt 20 -or $d.thread_count -le $d.process_count) { throw "processes=$($d.process_count) threads=$($d.thread_count)" }
   $ping = $d.processes | Where-Object { $_.name -like 'ping.exe' } | Select-Object -First 1
   if (-not $ping) { throw 'ping fixture process not found' }
-  if ($ping.base_priority -ne 8 -or $ping.virtual_bytes -le 0 -or $ping.private_bytes -le 0 -or @($ping.thread_detail).Count -lt 1) { throw ('ping counters look wrong: ' + ($ping | Select-Object name, base_priority, virtual_bytes, private_bytes, threads | ConvertTo-Json -Compress)) }
+  # the fixture process may still be running: its live base priority must equal what was recorded (it is inherited, so it varies by host)
+  $live = Get-Process -Id $ping.pid -ErrorAction SilentlyContinue
+  if ($live -and $live.BasePriority -ne $ping.base_priority) { throw "base priority $($ping.base_priority) recorded but $($live.BasePriority) live" }
+  if ($ping.base_priority -lt 1 -or $ping.virtual_bytes -le 0 -or $ping.private_bytes -le 0 -or @($ping.thread_detail).Count -lt 1) { throw ('ping counters look wrong: ' + ($ping | Select-Object name, base_priority, virtual_bytes, private_bytes, threads | ConvertTo-Json -Compress)) }
   $detailed = (Text 'processes\processes-detailed.json' | ConvertFrom-Json).data.processes
   $pids = @{}; foreach ($p in $d.processes) { $pids[[string]$p.pid] = $p }
   $common = @($detailed | Where-Object { $pids.ContainsKey([string]$_.pid) }).Count
