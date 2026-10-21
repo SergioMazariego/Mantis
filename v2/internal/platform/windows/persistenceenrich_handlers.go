@@ -167,7 +167,11 @@ func collectHandlerEntries(add func(cat, loc, entry, profile, launch string)) {
 		as := `SOFTWARE\Microsoft\Active Setup\Installed Components`
 		for _, sub := range regSubKeys(registry.LOCAL_MACHINE, as, v.v) {
 			if d := lookupValue(regStrings(registry.LOCAL_MACHINE, as+`\`+sub, v.v), "StubPath"); len(d) > 0 {
-				add("logon", locate(as, v.prefix), sub, "System-wide", d[0])
+				stub := d[0]
+				if v.prefix != "" {
+					stub = wowCommand(stub)
+				}
+				add("logon", locate(as, v.prefix), sub, "System-wide", stub)
 			}
 		}
 	}
@@ -335,6 +339,74 @@ func collectProviderEntries(add func(cat, loc, entry, profile, launch string)) {
 	for _, sub := range regSubKeys(registry.LOCAL_MACHINE, pp, registry.WOW64_64KEY) {
 		if d := lookupValue(regStrings(registry.LOCAL_MACHINE, pp+`\`+sub, registry.WOW64_64KEY), "Name"); len(d) > 0 {
 			add("print_monitors", `HKLM\`+pp, sub, "System-wide", filepath.Join(win, "System32", d[0]))
+		}
+	}
+}
+
+var system32Pattern = regexp.MustCompile(`(?i)\\system32\\`)
+
+// wowCommand points a 32-bit-view command at SysWOW64 when the file exists there.
+func wowCommand(cmd string) string {
+	exp := expandEnv(cmd)
+	alt := system32Pattern.ReplaceAllString(exp, `\SysWOW64\`)
+	if alt != exp {
+		if p := resolveExecutable(alt); p != "" && fileExists(p) {
+			return alt
+		}
+	}
+	return exp
+}
+
+var rundll32Pattern = regexp.MustCompile(`(?i)rundll32(?:\.exe)?"?\s+(.+)$`)
+
+// rundll32Target extracts the DLL that a "rundll32 <dll>,<function>" launch string loads.
+func rundll32Target(launch string) string {
+	m := rundll32Pattern.FindStringSubmatch(strings.TrimSpace(expandEnv(launch)))
+	if m == nil {
+		return ""
+	}
+	arg := strings.TrimSpace(m[1])
+	if strings.HasPrefix(arg, `"`) {
+		if end := strings.Index(arg[1:], `"`); end >= 0 {
+			arg = arg[1 : 1+end]
+		}
+	} else if i := strings.IndexAny(arg, ", "); i > 0 {
+		arg = arg[:i]
+	}
+	arg = strings.Trim(strings.TrimSpace(arg), `"`)
+	if arg == "" {
+		return ""
+	}
+	win := windowsDir()
+	if !strings.ContainsAny(arg, `\/`) {
+		for _, d := range []string{win + `\System32`, win, win + `\SysWOW64`} {
+			if p := filepath.Join(d, arg); fileExists(p) {
+				return p
+			}
+		}
+	}
+	return arg
+}
+
+// collectStartupFolderEntries lists the programs (not shortcuts, whose targets need the shell) placed in the
+// all-users and per-user Startup folders.
+func collectStartupFolderEntries(add func(cat, loc, entry, profile, launch string)) {
+	dirs := map[string]string{expandEnv(`%ProgramData%`) + `\Microsoft\Windows\Start Menu\Programs\Startup`: "System-wide"}
+	for _, d := range perUser(`AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup`) {
+		dirs[d] = "user profile"
+	}
+	for dir, profile := range dirs {
+		entries, err := os.ReadDir(extended(dir))
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			name := e.Name()
+			low := strings.ToLower(name)
+			if e.IsDir() || low == "desktop.ini" || strings.HasSuffix(low, ".lnk") {
+				continue
+			}
+			add("logon", dir, name, profile, filepath.Join(dir, name))
 		}
 	}
 }

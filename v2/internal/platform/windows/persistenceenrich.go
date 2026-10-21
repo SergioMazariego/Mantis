@@ -49,6 +49,7 @@ type enrichEntry struct {
 	Profile      string `json:"profile"`
 	LaunchString string `json:"launch_string"`
 	ImagePath    string `json:"image_path,omitempty"`
+	LaunchTarget string `json:"launch_target,omitempty"` // DLL run through rundll32, resolved like ImagePath
 }
 
 type enrichedImage struct {
@@ -374,18 +375,26 @@ func collectEnrichEntries(ctx context.Context, w *warnings) []enrichEntry {
 		}
 		vals := regStrings(registry.LOCAL_MACHINE, svcRoot+`\`+name, registry.WOW64_64KEY)
 		img := lookupValue(vals, "ImagePath")
-		if len(img) == 0 {
-			continue
-		}
 		cat := "services"
+		isDriver := false
 		if k, err := registry.OpenKey(registry.LOCAL_MACHINE, svcRoot+`\`+name, registry.QUERY_VALUE|registry.WOW64_64KEY); err == nil {
 			if t, _, err := k.GetIntegerValue("Type"); err == nil && (t == 1 || t == 2 || t == 8) {
-				cat = "drivers"
+				cat, isDriver = "drivers", true
 			}
 			k.Close()
 		}
 		loc := `HKLM\` + svcRoot
-		add(cat, loc, name, "System-wide", img[0])
+		switch {
+		case len(img) > 0:
+			add(cat, loc, name, "System-wide", img[0])
+		case isDriver:
+			// built-in drivers (Ntfs, Null, Msfs, ...) have no ImagePath: Windows loads System32\drivers\<name>.sys
+			add(cat, loc, name, "System-wide", filepath.Join(win, "System32", "drivers", name+".sys"))
+		}
+		// the service DLL of a svchost-hosted service sits in the service key or in its Parameters subkey
+		for _, d := range lookupValue(vals, "ServiceDll") {
+			add(cat, loc, name+" (ServiceDll)", "System-wide", d)
+		}
 		if p := regStrings(registry.LOCAL_MACHINE, svcRoot+`\`+name+`\Parameters`, registry.WOW64_64KEY); p != nil {
 			for _, d := range lookupValue(p, "ServiceDll") {
 				add(cat, loc, name+" (ServiceDll)", "System-wide", d)
@@ -394,6 +403,7 @@ func collectEnrichEntries(ctx context.Context, w *warnings) []enrichEntry {
 	}
 	collectHandlerEntries(add)
 	collectProviderEntries(add)
+	collectStartupFolderEntries(add)
 	// Scheduled tasks: the commands in the task XML
 	tasksDir := win + `\System32\Tasks`
 	count := 0
@@ -444,6 +454,11 @@ func persistenceEnriched(ctx context.Context, w *warnings) (any, error) {
 			break
 		}
 		enr.describe(ctx, entries[i].ImagePath)
+		// rundll32 entries run a function exported by the DLL named in their arguments: that DLL is the payload
+		if tgt := rundll32Target(entries[i].LaunchString); tgt != "" && strings.EqualFold(filepath.Base(entries[i].ImagePath), "rundll32.exe") {
+			entries[i].LaunchTarget = tgt
+			enr.describe(ctx, tgt)
+		}
 	}
 	images := make([]*enrichedImage, 0, len(enr.seen))
 	for _, v := range enr.seen {

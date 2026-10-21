@@ -55,3 +55,17 @@ func TestLookupValueIgnoresCase(t *testing.T) {
 		t.Error("a missing value must return nil")
 	}
 }
+
+func TestRundll32TargetFindsTheDLL(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{`C:\Windows\System32\rundll32.exe C:\x\y.dll,Func arg`, `C:\x\y.dll`},
+		{`"C:\Windows\System32\rundll32.exe" "C:\Program Files\a b\z.dll",Run`, `C:\Program Files\a b\z.dll`},
+		{`rundll32.exe C:\x\y.dll`, `C:\x\y.dll`},
+		{`C:\Windows\System32\notepad.exe C:\x\y.dll`, ``},
+	}
+	for _, c := range cases {
+		if got := rundll32Target(c.in); got != c.want {
+			t.Errorf("rundll32Target(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
