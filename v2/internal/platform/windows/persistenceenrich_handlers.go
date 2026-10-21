@@ -410,3 +410,26 @@ func collectStartupFolderEntries(add func(cat, loc, entry, profile, launch strin
 		}
 	}
 }
+
+// launchTarget returns the DLL a launcher binary loads: rundll32 <dll>,<function> and regsvr32 [switches] <dll>.
+func launchTarget(launch, imagePath string) string {
+	switch strings.ToLower(filepath.Base(imagePath)) {
+	case "rundll32.exe":
+		return rundll32Target(launch)
+	case "regsvr32.exe":
+		for _, tok := range strings.Fields(expandEnv(launch))[1:] {
+			tok = strings.Trim(tok, `"`)
+			low := strings.ToLower(tok)
+			if strings.HasPrefix(low, "/") || strings.HasPrefix(low, "-") {
+				continue
+			}
+			if strings.HasSuffix(low, ".dll") || strings.HasSuffix(low, ".ocx") {
+				if !strings.ContainsAny(tok, `\/`) {
+					return filepath.Join(windowsDir(), "System32", tok)
+				}
+				return tok
+			}
+		}
+	}
+	return ""
+}

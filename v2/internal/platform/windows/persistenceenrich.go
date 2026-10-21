@@ -269,7 +269,7 @@ func utf16OrUTF8(b []byte) string {
 	return strings.TrimPrefix(string(b), "\xef\xbb\xbf")
 }
 
-var taskCommandPattern = regexp.MustCompile(`(?is)<Command>\s*([^<]+?)\s*</Command>`)
+var taskCommandPattern = regexp.MustCompile(`(?is)<Command>\s*([^<]+?)\s*</Command>(?:\s*<Arguments>\s*([^<]*?)\s*</Arguments>)?`)
 var taskComHandlerPattern = regexp.MustCompile(`(?is)<ComHandler>\s*<ClassId>\s*(\{[^<]+?\})\s*</ClassId>`)
 
 func collectEnrichEntries(ctx context.Context, w *warnings) []enrichEntry {
@@ -320,6 +320,9 @@ func collectEnrichEntries(ctx context.Context, w *warnings) []enrichEntry {
 	})
 	for _, v := range views {
 		hk(registry.LOCAL_MACHINE, "HKLM", `SOFTWARE\Microsoft\Windows NT\CurrentVersion\Windows`, v.v, func(loc string, vals map[string][]string) {
+			for _, s := range lookupValue(vals, "IconServiceLib") {
+				add("logon", loc, "IconServiceLib", "System-wide", filepath.Join(win, "System32", strings.TrimSpace(s)))
+			}
 			for _, s := range lookupValue(vals, "AppInit_DLLs") {
 				for _, part := range strings.FieldsFunc(s, func(r rune) bool { return r == ',' || r == ' ' }) {
 					add("appinit", loc, "AppInit_DLLs", "System-wide", part)
@@ -425,7 +428,11 @@ func collectEnrichEntries(ctx context.Context, w *warnings) []enrichEntry {
 		rel := strings.TrimPrefix(strings.TrimPrefix(path, extended(tasksDir)), `\`)
 		xml := utf16OrUTF8(data)
 		for _, m := range taskCommandPattern.FindAllStringSubmatch(xml, -1) {
-			add("scheduled_tasks", "Task Scheduler", `\`+rel, "System-wide", m[1])
+			launch := m[1]
+			if len(m) > 2 && strings.TrimSpace(m[2]) != "" {
+				launch += " " + strings.TrimSpace(m[2]) // rundll32 tasks carry the DLL in the arguments
+			}
+			add("scheduled_tasks", "Task Scheduler", `\`+rel, "System-wide", launch)
 		}
 		// COM-handler tasks run the in-process server registered for their class
 		for _, m := range taskComHandlerPattern.FindAllStringSubmatch(xml, -1) {
@@ -455,7 +462,7 @@ func persistenceEnriched(ctx context.Context, w *warnings) (any, error) {
 		}
 		enr.describe(ctx, entries[i].ImagePath)
 		// rundll32 entries run a function exported by the DLL named in their arguments: that DLL is the payload
-		if tgt := rundll32Target(entries[i].LaunchString); tgt != "" && strings.EqualFold(filepath.Base(entries[i].ImagePath), "rundll32.exe") {
+		if tgt := launchTarget(entries[i].LaunchString, entries[i].ImagePath); tgt != "" {
 			entries[i].LaunchTarget = tgt
 			enr.describe(ctx, tgt)
 		}

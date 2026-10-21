@@ -69,3 +69,25 @@ func TestRundll32TargetFindsTheDLL(t *testing.T) {
 		}
 	}
 }
+
+func TestLaunchTargetCoversRundll32AndRegsvr32(t *testing.T) {
+	win := windowsDir()
+	cases := []struct{ launch, image, want string }{
+		{`C:\Windows\System32\rundll32.exe C:\x\y.dll,Func`, `C:\Windows\System32\rundll32.exe`, `C:\x\y.dll`},
+		{`C:\Windows\System32\regsvr32.exe /s /n /i:/UserInstall C:\x\themeui.dll`, `C:\Windows\System32\regsvr32.exe`, `C:\x\themeui.dll`},
+		{`C:\Windows\System32\regsvr32.exe /s thing.ocx`, `C:\Windows\System32\regsvr32.exe`, win + `\System32\thing.ocx`},
+		{`C:\Windows\System32\notepad.exe a.dll`, `C:\Windows\System32\notepad.exe`, ``},
+	}
+	for _, c := range cases {
+		if got := launchTarget(c.launch, c.image); !strings.EqualFold(got, c.want) {
+			t.Errorf("launchTarget(%q) = %q, want %q", c.launch, got, c.want)
+		}
+	}
+}
+
+func TestTaskPatternKeepsTheArguments(t *testing.T) {
+	m := taskCommandPattern.FindStringSubmatch("<Exec><Command>%windir%" + `\system32\rundll32.exe` + "</Command>\n<Arguments>Startupscan.dll,SusRunTask</Arguments></Exec>")
+	if len(m) != 3 || m[2] != "Startupscan.dll,SusRunTask" {
+		t.Errorf("task arguments not captured: %v", m)
+	}
+}
