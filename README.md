@@ -43,7 +43,7 @@ What the v2 collector offers today. Use `mantis-collect --list-artifacts` to see
 |:--|:--|
 | **Quick Triage** | System identity, processes, network, persistence, core event logs, key execution artifacts and Defender state. Minutes, small package. |
 | **Standard DFIR** | Quick plus registry hives, every exportable event channel, NTFS metadata, user activity, RDP and USB history, browsers and security configuration. |
-| **Full Forensic** | Standard plus the remaining sources, within size limits. Sensitive sources (SAM and SECURITY hives, RDP bitmap cache, Recycle Bin content) are only collected here and only with `--confirm-sensitive`. |
+| **Full Forensic** | Standard plus the remaining sources, within size limits. Sensitive sources (SAM and SECURITY hives, RDP bitmap cache, Recycle Bin content, kernel crash dumps) are only collected here and only with `--confirm-sensitive`. |
 | **Custom** | Any individual sources you tick in the window or pass with `--artifacts`. |
 
 Nothing is collected unless you select it.
@@ -52,14 +52,14 @@ Nothing is collected unless you select it.
 
 | Category | What is collected | Why it matters |
 |:--|:--|:--|
-| **System** | OS and host identity, time zone and clock offset, physical disks, partitions and volumes, installed software, services and loaded drivers | Establish what machine and configuration the evidence came from |
-| **Processes** | Detailed snapshot with command lines, parents, owners and image hashes; embedded signature state; handle counts; virtual memory region map (metadata only) | Spot masquerading processes and injection candidates |
+| **System** | OS and host identity, time zone and clock offset, physical disks (with offline, read-only and dynamic state), partitions and volumes, installed software, services and loaded drivers | Establish what machine and configuration the evidence came from |
+| **Processes** | Detailed snapshot with command lines, parents, owners and image hashes; embedded signature state; handle counts; virtual memory region map (metadata only); performance counters (base priority, CPU times, virtual and pool memory, faults, I/O) and per-thread state | Spot masquerading processes and injection candidates |
 | **Network** | TCP and UDP tables with owning process, interfaces, DNS cache, neighbor table and routes, proxy settings, firewall configuration and network profiles | Live connections and the processes behind them |
-| **Persistence** | Run and RunOnce keys, scheduled tasks and task cache, services, startup folders, WMI repository, IFEO, COM and Active Setup keys, Winsock providers, logon and boot keys, shell extensions, BITS jobs | The common footholds, in one pass |
+| **Persistence** | Run and RunOnce keys, scheduled tasks and task cache, services, startup folders, WMI repository, IFEO, COM and Active Setup keys, Winsock providers, logon and boot keys, shell extensions, credential providers, protocol and shell handlers, DirectShow filters, BITS jobs; every autostart entry is also resolved to its executable with MD5/SHA-1/SHA-256, Authenticode, company, description and version | The common footholds, in one pass |
 | **Registry** | SYSTEM, SOFTWARE and DEFAULT hives, per-user NTUSER.DAT and UsrClass.dat, transaction logs, with a read-only snapshot fallback for locked hives | Offline analysis of configuration, accounts and execution state |
-| **Event logs** | Every exportable channel as EVTX, plus channel configuration; analytic and debug channels that cannot be exported are listed as one explicit gap | Timelines for logons, process creation, PowerShell, tasks and more |
+| **Event logs** | Every exportable channel as EVTX, plus channel configuration and archived logs; in Full, a byte-for-byte copy of every `.evtx` file as it is on disk; analytic and debug channels that cannot be exported are listed as one explicit gap | Timelines for logons, process creation, PowerShell, tasks and more |
 | **NTFS** | `$MFT`, `$LogFile`, `$UsnJrnl`, volume metadata, Zone.Identifier streams, alternate data stream inventory, Recycle Bin metadata, read from the raw volume | File-system activity that the live file API hides |
-| **Execution** | Prefetch, Amcache, ShimCache, BAM/DAM, UserAssist, SRUM, Windows Error Reporting, compatibility assistant, PowerShell history | Evidence of programs that ran |
+| **Execution** | Prefetch, Amcache, ShimCache, BAM/DAM, UserAssist, SRUM, Windows Error Reporting, compatibility assistant, PowerShell history; kernel crash dumps in Full | Evidence of programs that ran |
 | **Users** | Local accounts and groups, profiles, recent files, jump lists, timeline activity, Explorer activity, package manager data | Who was on the host and what they touched |
 | **Remote access** | Logon sessions, RDP client history and server configuration, SMB shares and sessions, SMB and WinRM configuration | Lateral movement and remote administration traces |
 | **USB** | Device history from the registry, setup logs and user mount points | Removable media that touched the host |
