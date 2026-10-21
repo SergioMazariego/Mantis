@@ -38,7 +38,7 @@ func TestUTF16OrUTF8DecodesTaskFiles(t *testing.T) {
 		t.Errorf("UTF-8 BOM not stripped: %q", got)
 	}
 	m := taskCommandPattern.FindStringSubmatch("<Exec>\n <Command>" + `C:\x\y.exe` + "</Command></Exec>")
-	if len(m) != 2 || m[1] != `C:\x\y.exe` {
+	if len(m) != 3 || m[1] != `C:\x\y.exe` {
 		t.Errorf("task command not extracted: %v", m)
 	}
 }
