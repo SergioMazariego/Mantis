@@ -208,6 +208,7 @@ const (
 	ioctlDiskGeometryEx       = 0x000700A0
 	ioctlDiskLayoutEx         = 0x00070050
 	ioctlVolumeDiskExtents    = 0x00560000
+	ioctlDiskGetAttributes    = 0x000740F0 // IOCTL_DISK_GET_DISK_ATTRIBUTES
 )
 
 type physicalDisk struct {
@@ -222,6 +223,9 @@ type physicalDisk struct {
 	BytesPerSector uint32          `json:"bytes_per_sector,omitempty"`
 	SizeBytes      int64           `json:"size_bytes,omitempty"`
 	PartitionStyle string          `json:"partition_style,omitempty"`
+	Offline        *bool           `json:"offline,omitempty"`   // disk attribute: taken offline (diskpart "Offline")
+	ReadOnly       *bool           `json:"read_only,omitempty"` // disk attribute: read-only
+	Dynamic        *bool           `json:"dynamic,omitempty"`   // Logical Disk Manager (dynamic disk) partitions present
 	DiskSignature  string          `json:"disk_signature_or_guid,omitempty"`
 	Partitions     []partitionInfo `json:"partitions,omitempty"`
 	LayoutRawB64   string          `json:"layout_raw_base64,omitempty"`
@@ -344,6 +348,22 @@ func diskInventory(w *warnings) map[string]any {
 			}
 		} else if err != nil {
 			d.Errors = append(d.Errors, "layout: "+err.Error())
+		}
+		// GET_DISK_ATTRIBUTES: Version, Reserved, Attributes (bit 0 offline, bit 1 read-only)
+		if out, err := deviceIoctl(h, ioctlDiskGetAttributes, nil, 16); err == nil && len(out) >= 16 {
+			attr := binary.LittleEndian.Uint64(out[8:])
+			off, ro := attr&1 != 0, attr&2 != 0
+			d.Offline, d.ReadOnly = &off, &ro
+		}
+		dyn := false
+		for _, pi := range d.Partitions {
+			// LDM metadata/data partitions (GPT) or MBR type 0x42 mark a dynamic disk
+			if pi.MBRType == 0x42 || strings.EqualFold(pi.TypeGUID, "{5808C8AA-7E8F-42E0-85D2-E1E90434CFB3}") || strings.EqualFold(pi.TypeGUID, "{AF9B60A0-1431-4F62-BC68-3311714A69AD}") {
+				dyn = true
+			}
+		}
+		if len(d.Partitions) > 0 {
+			d.Dynamic = &dyn
 		}
 		windows.CloseHandle(h)
 		disks = append(disks, d)
