@@ -343,7 +343,7 @@ func collectProviderEntries(add func(cat, loc, entry, profile, launch string)) {
 	}
 }
 
-var system32Pattern = regexp.MustCompile(`(?i)\system32\`)
+var system32Pattern = regexp.MustCompile(`(?i)\\system32\\`)
 
 // wowCommand points a 32-bit-view command at SysWOW64 when the file exists there.
 func wowCommand(cmd string) string {
