@@ -53,6 +53,7 @@ type enrichEntry struct {
 	imageHint        string // resolved instead of the launch string when set (service DLL)
 	svcDisplay       string // service display name, resolved
 	svcDescription   string // service description, resolved
+	taskRaw          string // task description written as a resource reference
 	TimeUTC          string `json:"time_utc,omitempty"`          // last write time of the image file (the "Time" an Autoruns scan reports)
 	KeyTimeUTC       string `json:"key_time_utc,omitempty"`      // last write of the registry key (or task file) that holds the entry
 	Enabled          string `json:"enabled,omitempty"`           // enabled or disabled (StartupApproved, service start type, task settings)
@@ -513,6 +514,9 @@ func persistenceEnriched(ctx context.Context, w *warnings) (any, error) {
 			e.EntryDescription = describeServiceEntry(e.Entry, e.svcDisplay, e.svcDescription, fileDesc)
 		case e.EntryDescription == "":
 			e.EntryDescription = fileDesc
+			if e.EntryDescription == "" {
+				e.EntryDescription = e.taskRaw
+			}
 		}
 	}
 	images := make([]*enrichedImage, 0, len(enr.seen))

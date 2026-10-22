@@ -116,7 +116,13 @@ func annotateEntries(entries []enrichEntry) {
 					e.Enabled = "disabled"
 				}
 				if m := taskDescriptionPattern.FindStringSubmatch(xml); m != nil {
-					e.EntryDescription = indirectStringOrRaw(m[1]) // resolved when possible, otherwise as written, like Autoruns
+					// plain text is shown as written; a "$(@file.dll,-n)" reference is not resolved by Autoruns: the
+					// description of the image file is shown instead, and the reference itself only when there is none
+					if txt := strings.TrimSpace(m[1]); strings.HasPrefix(txt, "$(") {
+						e.taskRaw = txt
+					} else {
+						e.EntryDescription = txt
+					}
 				}
 			}
 		case "services", "drivers":
@@ -199,9 +205,6 @@ func describeServiceEntry(name, display, svcDesc, fileDesc string) string {
 	second := svcDesc
 	if second == "" {
 		second = fileDesc
-	}
-	if second == "" {
-		return first
 	}
 	return first + ": " + second
 }
