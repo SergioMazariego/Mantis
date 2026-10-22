@@ -49,12 +49,12 @@ type enrichEntry struct {
 	Profile          string `json:"profile"`
 	LaunchString     string `json:"launch_string"`
 	ImagePath        string `json:"image_path,omitempty"`
-	LaunchTarget     string `json:"launch_target,omitempty"`     // DLL run through rundll32, resolved like ImagePath
+	LauncherPath     string `json:"launcher_path,omitempty"` // rundll32/regsvr32 when the image is the DLL it loads
+	imageHint        string // resolved instead of the launch string when set (service DLL)
 	TimeUTC          string `json:"time_utc,omitempty"`          // last write time of the image file (the "Time" an Autoruns scan reports)
 	KeyTimeUTC       string `json:"key_time_utc,omitempty"`      // last write of the registry key (or task file) that holds the entry
 	Enabled          string `json:"enabled,omitempty"`           // enabled or disabled (StartupApproved, service start type, task settings)
 	EntryDescription string `json:"entry_description,omitempty"` // "<display name>: <description>" of a service or driver, or the provider name; else use the image description
-	TaskDescription  string `json:"task_description,omitempty"`  // description written in the task definition
 }
 
 type enrichedImage struct {
@@ -290,6 +290,12 @@ func collectEnrichEntries(ctx context.Context, w *warnings) []enrichEntry {
 			out = append(out, enrichEntry{Category: cat, Location: loc, Entry: entry, Profile: profile, LaunchString: launch})
 		}
 	}
+	// addImage records an entry whose image is not the first program of its launch string (a service DLL)
+	addImage := func(cat, loc, entry, profile, launch, image string) {
+		if strings.TrimSpace(launch) != "" {
+			out = append(out, enrichEntry{Category: cat, Location: loc, Entry: entry, Profile: profile, LaunchString: launch, imageHint: image})
+		}
+	}
 	win := windowsDir()
 	hk := func(root registry.Key, rootName, path string, view uint32, f func(loc string, vals map[string][]string)) {
 		if vals := regStrings(root, path, view); vals != nil {
@@ -398,21 +404,24 @@ func collectEnrichEntries(ctx context.Context, w *warnings) []enrichEntry {
 			k.Close()
 		}
 		loc := `HKLM\` + svcRoot
+		// the service DLL of a svchost-hosted service sits in the service key or in its Parameters subkey:
+		// like Autoruns, the DLL is the image and the ImagePath command line is the launch string
+		var dll string
+		if d := lookupValue(vals, "ServiceDll"); len(d) > 0 {
+			dll = d[0]
+		} else if p := regStrings(registry.LOCAL_MACHINE, svcRoot+`\`+name+`\Parameters`, registry.WOW64_64KEY); p != nil {
+			if d := lookupValue(p, "ServiceDll"); len(d) > 0 {
+				dll = d[0]
+			}
+		}
 		switch {
 		case len(img) > 0:
-			add(cat, loc, name, "System-wide", img[0])
+			addImage(cat, loc, name, "System-wide", img[0], dll)
 		case isDriver:
 			// built-in drivers (Ntfs, Null, Msfs, ...) have no ImagePath: Windows loads System32\drivers\<name>.sys
 			add(cat, loc, name, "System-wide", filepath.Join(win, "System32", "drivers", name+".sys"))
-		}
-		// the service DLL of a svchost-hosted service sits in the service key or in its Parameters subkey
-		for _, d := range lookupValue(vals, "ServiceDll") {
-			add(cat, loc, name+" (ServiceDll)", "System-wide", d)
-		}
-		if p := regStrings(registry.LOCAL_MACHINE, svcRoot+`\`+name+`\Parameters`, registry.WOW64_64KEY); p != nil {
-			for _, d := range lookupValue(p, "ServiceDll") {
-				add(cat, loc, name+" (ServiceDll)", "System-wide", d)
-			}
+		case dll != "":
+			addImage(cat, loc, name, "System-wide", dll, dll)
 		}
 	}
 	collectHandlerEntries(add)
@@ -464,7 +473,11 @@ func persistenceEnriched(ctx context.Context, w *warnings) (any, error) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		entries[i].ImagePath = resolveExecutable(entries[i].LaunchString)
+		src := entries[i].LaunchString
+		if entries[i].imageHint != "" {
+			src = entries[i].imageHint
+		}
+		entries[i].ImagePath = resolveExecutable(src)
 		if entries[i].ImagePath == "" {
 			continue
 		}
@@ -475,10 +488,14 @@ func persistenceEnriched(ctx context.Context, w *warnings) (any, error) {
 		if img := enr.describe(ctx, entries[i].ImagePath); img != nil {
 			entries[i].TimeUTC = img.ModifiedUTC
 		}
-		// rundll32 entries run a function exported by the DLL named in their arguments: that DLL is the payload
+		// rundll32/regsvr32 entries run a function exported by the DLL named in their arguments: that DLL is the
+		// payload and, like Autoruns, the image; the launcher stays recorded
 		if tgt := launchTarget(entries[i].LaunchString, entries[i].ImagePath); tgt != "" {
-			entries[i].LaunchTarget = tgt
-			enr.describe(ctx, tgt)
+			entries[i].LauncherPath = entries[i].ImagePath
+			entries[i].ImagePath = tgt
+			if img := enr.describe(ctx, tgt); img != nil {
+				entries[i].TimeUTC = img.ModifiedUTC
+			}
 		}
 	}
 	images := make([]*enrichedImage, 0, len(enr.seen))

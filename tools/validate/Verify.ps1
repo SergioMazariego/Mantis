@@ -144,13 +144,14 @@ Check 'V-PERSIST: autostart entries are enriched with hash, signature, company a
   $states = @($d.entries | ForEach-Object { $_.enabled } | Sort-Object -Unique)
   if ($states -notcontains 'enabled') { throw "entries carry no enabled state (seen: $($states -join ', '))" }
   if (@($d.entries | Where-Object { $_.entry_description }).Count -lt 20) { throw 'service and task descriptions are missing' }
-  $svcDll = @($d.entries | Where-Object { $_.entry -like '*(ServiceDll)' }).Count
-  if ($svcDll -lt 50) { throw "only $svcDll service DLL entries" }
+  # a svchost-hosted service is one row: the DLL is the image and the ImagePath command line is the launch string
+  $svcDll = @($d.entries | Where-Object { $_.category -eq 'services' -and $_.image_path -like '*.dll' -and $_.launch_string -match 'svchost' }).Count
+  if ($svcDll -lt 50) { throw "only $svcDll service rows resolved to their service DLL" }
   $builtin = $d.entries | Where-Object { $_.category -eq 'drivers' -and $_.entry -eq 'Ntfs' } | Select-Object -First 1
   if (-not $builtin -or $builtin.image_path -notmatch 'drivers\\ntfs\.sys$') { throw 'built-in driver without ImagePath (Ntfs) was not resolved to System32\drivers' }
   # the image set differs by architecture: only require the DLL when rundll32 entries exist
-  $rundll = @($d.entries | Where-Object { $_.image_path -like '*\rundll32.exe' -and $_.launch_string -match '(?i)rundll32(\.exe)?"?\s+\S' })
-  if ($rundll.Count -gt 0 -and @($d.entries | Where-Object { $_.launch_target }).Count -lt 1) { throw "$($rundll.Count) rundll32 entries exist but none was resolved to its DLL" }
+  $rundll = @($d.entries | Where-Object { $_.launch_string -match '(?i)rundll32(\.exe)?"?\s+\S' })
+  if ($rundll.Count -gt 0 -and @($d.entries | Where-Object { $_.launcher_path -like '*rundll32.exe' -and $_.image_path -like '*.dll' }).Count -lt 1) { throw "$($rundll.Count) rundll32 entries exist but none has the DLL as its image" }
   if (-not ($d.entries | Where-Object { $_.entry -eq 'MantisFixture.cmd' })) { throw 'the Startup folder fixture was not listed' }
   if ($withHash -lt 50) { throw "only $withHash images hashed" }
   if ($withCompany -lt 20) { throw "only $withCompany images with a company" }
