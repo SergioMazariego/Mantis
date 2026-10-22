@@ -127,9 +127,9 @@ func TestDescribeServiceEntryFollowsTheAutorunsModel(t *testing.T) {
 	cases := []struct{ name, display, svc, file, want string }{
 		{"AJRouter", "AllJoyn Router Service", "Routes AllJoyn messages", "x", "AllJoyn Router Service: Routes AllJoyn messages"},
 		{"ACPI", "Microsoft ACPI Driver", "", "ACPI Driver for NT", "Microsoft ACPI Driver: ACPI Driver for NT"},
-		{"Odd", "", "", "", "Odd"},
+		{"Odd", "", "", "", "Odd: "},
 		{"NoDisplay", "", "text", "", "NoDisplay: text"},
-		{"OnlyDisplay", "Shown", "", "", "Shown"},
+		{"OnlyDisplay", "Shown", "", "", "Shown: "},
 	}
 	for _, c := range cases {
 		if got := describeServiceEntry(c.name, c.display, c.svc, c.file); got != c.want {
