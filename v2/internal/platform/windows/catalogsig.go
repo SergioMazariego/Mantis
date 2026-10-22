@@ -64,53 +64,59 @@ type wintrustDataCatalog struct {
 // verifyCatalogSignature looks the file up in the catalog database (SHA-256 first, then SHA-1) and validates
 // the catalog membership. found is false when no catalog lists the file.
 func verifyCatalogSignature(path string) (status, code string, found bool) {
+	status, code, _, found = verifyCatalogSignatureDetail(path)
+	return
+}
+
+// verifyCatalogSignatureDetail also returns the name of the catalog signer.
+func verifyCatalogSignatureDetail(path string) (status, code, signer string, found bool) {
 	p, err := windows.UTF16PtrFromString(path)
 	if err != nil {
-		return "", "", false
+		return "", "", "", false
 	}
 	h, err := windows.CreateFile(p, windows.GENERIC_READ, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, nil, windows.OPEN_EXISTING, windows.FILE_ATTRIBUTE_NORMAL, 0)
 	if err != nil {
-		return "", "", false
+		return "", "", "", false
 	}
 	defer windows.CloseHandle(h)
 	for _, alg := range []string{"SHA256", "SHA1"} {
-		if st, c, ok := catalogLookup(h, p, alg); ok {
-			return st, c, true
+		if st, c, sg, ok := catalogLookup(h, p, alg); ok {
+			return st, c, sg, true
 		}
 	}
-	return "", "", false
+	return "", "", "", false
 }
 
-func catalogLookup(h windows.Handle, path *uint16, alg string) (string, string, bool) {
+func catalogLookup(h windows.Handle, path *uint16, alg string) (string, string, string, bool) {
 	if pCryptCATAdminAcquireContext2.Find() != nil {
-		return "", "", false
+		return "", "", "", false
 	}
 	algW, _ := windows.UTF16PtrFromString(alg)
 	var admin uintptr
 	if r, _, _ := pCryptCATAdminAcquireContext2.Call(uintptr(unsafe.Pointer(&admin)), 0, uintptr(unsafe.Pointer(algW)), 0, 0); r == 0 || admin == 0 {
-		return "", "", false
+		return "", "", "", false
 	}
 	defer pCryptCATAdminReleaseContext.Call(admin, 0)
 
 	var n uint32
 	pCryptCATAdminCalcHashFromFileHandle2.Call(admin, uintptr(h), uintptr(unsafe.Pointer(&n)), 0, 0)
 	if n == 0 || n > 128 {
-		return "", "", false
+		return "", "", "", false
 	}
 	hash := make([]byte, n)
 	if r, _, _ := pCryptCATAdminCalcHashFromFileHandle2.Call(admin, uintptr(h), uintptr(unsafe.Pointer(&n)), uintptr(unsafe.Pointer(&hash[0])), 0); r == 0 {
-		return "", "", false
+		return "", "", "", false
 	}
 	cat, _, _ := pCryptCATAdminEnumCatalogFromHash.Call(admin, uintptr(unsafe.Pointer(&hash[0])), uintptr(n), 0, 0)
 	if cat == 0 {
-		return "", "", false
+		return "", "", "", false
 	}
 	defer pCryptCATAdminReleaseCatalogContext.Call(admin, cat, 0)
 
 	var ci catalogInfoRec
 	ci.Size = uint32(unsafe.Sizeof(ci))
 	if r, _, _ := pCryptCATCatalogInfoFromContext.Call(cat, uintptr(unsafe.Pointer(&ci)), 0); r == 0 {
-		return "", "", false
+		return "", "", "", false
 	}
 	tag, _ := windows.UTF16PtrFromString(strings.ToUpper(hex.EncodeToString(hash)))
 	wci := wintrustCatalogInfo{CatalogFilePath: &ci.CatalogFile[0], MemberTag: tag, MemberFilePath: path, MemberFile: h,
@@ -121,6 +127,10 @@ func catalogLookup(h windows.Handle, path *uint16, alg string) (string, string, 
 	data.Size = uint32(unsafe.Sizeof(data))
 	invalidHwnd := ^uintptr(0)
 	r, _, _ := pWinVerifyTrust.Call(invalidHwnd, uintptr(unsafe.Pointer(&wvtGenericVerifyV2)), uintptr(unsafe.Pointer(&data)))
+	signer := ""
+	if uint32(r) == 0 {
+		signer = signerFromState(data.StateData)
+	}
 	data.StateAction = 2 // WTD_STATEACTION_CLOSE
 	pWinVerifyTrust.Call(invalidHwnd, uintptr(unsafe.Pointer(&wvtGenericVerifyV2)), uintptr(unsafe.Pointer(&data)))
 	runtime.KeepAlive(&ci)
@@ -128,7 +138,7 @@ func catalogLookup(h windows.Handle, path *uint16, alg string) (string, string, 
 	runtime.KeepAlive(&wci)
 	code := fmt.Sprintf("0x%08X", uint32(r))
 	if uint32(r) == 0 {
-		return "valid (catalog-signed)", code, true
+		return "valid (catalog-signed)", code, signer, true
 	}
-	return "catalog entry found but the signature is not valid", code, true
+	return "catalog entry found but the signature is not valid", code, "", true
 }

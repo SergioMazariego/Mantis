@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -152,7 +153,18 @@ func run() int {
 	cfg := runConfig{caseID: *caseIDValue, tenant: *tenantValue, actor: *actorValue, title: *caseTitle, profile: profileName,
 		outDir: outDir, dataDir: dataDir, budget: budget, force: *force}
 	guiCollect = func(ctx context.Context, chosen []collector.Source, onEvent func(collector.Event)) ([]collector.ItemResult, error) {
-		return runCollection(ctx, cfg, chosen, onEvent)
+		run := cfg
+		if profile == "" && !*collectAll && *artifactIDs == "" {
+			// the window picked the sources: when they are exactly a built-in profile, record that profile and
+			// apply its size budget, so the same selection gives the same package as the command line
+			if name, p := matchProfile(sources, chosen); name != "" {
+				run.profile = name
+				if *maxTotal == 0 {
+					run.budget = collector.DefaultMaxTotal(p)
+				}
+			}
+		}
+		return runCollection(ctx, run, chosen, onEvent)
 	}
 
 	if profile == "" && !*collectAll && *artifactIDs == "" {
@@ -172,8 +184,40 @@ func run() int {
 		}
 		return 2
 	}
-	results, err := runCollection(context.Background(), cfg, selected, nil)
+	// Ctrl+C stops the acquisition and still exports what was already collected, like the Cancel button
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	results, err := runCollection(ctx, cfg, selected, nil)
+	if ctx.Err() != nil {
+		fmt.Fprintln(os.Stderr, "interrupted: the evidence acquired so far was exported")
+	}
 	return reportResults(results, err, *caseIDValue)
+}
+
+// matchProfile returns the built-in profile whose sources are exactly the chosen ones (sensitive
+// sources excluded, as the profile buttons do), or "" when the selection is custom.
+func matchProfile(all, chosen []collector.Source) (string, collector.Profile) {
+	ids := map[string]bool{}
+	for _, c := range chosen {
+		ids[c.ID] = true
+	}
+	for _, p := range []collector.Profile{collector.ProfileQuick, collector.ProfileStandard, collector.ProfileFull} {
+		want := collector.SelectProfile(all, p, false)
+		if len(want) != len(ids) {
+			continue
+		}
+		ok := true
+		for _, w := range want {
+			if !ids[w.ID] {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			return string(p), p
+		}
+	}
+	return "", ""
 }
 
 // usageError marks invalid operator input (exit code 2).

@@ -3,6 +3,7 @@
 package windows
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -89,5 +90,35 @@ func TestTaskPatternKeepsTheArguments(t *testing.T) {
 	m := taskCommandPattern.FindStringSubmatch("<Exec><Command>%windir%" + `\system32\rundll32.exe` + "</Command>\n<Arguments>Startupscan.dll,SusRunTask</Arguments></Exec>")
 	if len(m) != 3 || m[2] != "Startupscan.dll,SusRunTask" {
 		t.Errorf("task arguments not captured: %v", m)
+	}
+}
+
+func TestIndirectStringPassesPlainTextThrough(t *testing.T) {
+	if got := indirectString("plain text"); got != "plain text" {
+		t.Errorf("plain text changed: %q", got)
+	}
+	if got := indirectString("$(plain)"); got != "plain" {
+		t.Errorf("task wrapper not removed: %q", got)
+	}
+}
+
+func TestPEDetailsOfASystemBinary(t *testing.T) {
+	path := windowsDir() + `\System32\kernel32.dll`
+	st, _, signer := verifySignatureDetail(path)
+	if !strings.HasPrefix(st, "valid") {
+		t.Fatalf("kernel32.dll should verify (embedded or catalog), got %q", st)
+	}
+	if !strings.Contains(strings.ToLower(signer), "microsoft") {
+		t.Errorf("signer name missing or unexpected: %q", signer)
+	}
+	sha1h, sha256h := peHashes(path)
+	if len(sha1h) != 40 || len(sha256h) != 64 {
+		t.Errorf("Authenticode hashes have the wrong length: %q %q", sha1h, sha256h)
+	}
+	if h := importHash(path); len(h) != 32 {
+		t.Errorf("import hash must be 32 hex characters, got %q", h)
+	}
+	if h := importHash(os.Args[0]); len(h) != 32 {
+		t.Errorf("import hash of the test binary must be 32 hex characters, got %q", h)
 	}
 }

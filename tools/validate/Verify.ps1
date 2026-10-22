@@ -133,6 +133,17 @@ Check 'V-PERSIST: autostart entries are enriched with hash, signature, company a
   if (@($d.images | Where-Object { $_.file_version_numeric -match '^\d+\.\d+\.\d+\.\d+$' }).Count -lt 20) { throw 'numeric file versions are missing' }
   $catalog = @($d.images | Where-Object { $_.authenticode -eq 'valid (catalog-signed)' }).Count
   if ($catalog -lt 100) { throw "only $catalog images verified through a security catalog" }
+  $withSigner = @($d.images | Where-Object { $_.signer }).Count
+  if ($withSigner -lt 100) { throw "only $withSigner images with a signer name" }
+  $withPE = @($d.images | Where-Object { $_.pe_sha1 -match '^[0-9A-F]{40}$' -and $_.pe_sha256 -match '^[0-9A-F]{64}$' }).Count
+  if ($withPE -lt 100) { throw "only $withPE images with Authenticode image hashes" }
+  $withImp = @($d.images | Where-Object { $_.imphash -match '^[0-9A-F]{32}$' }).Count
+  if ($withImp -lt 100) { throw "only $withImp images with an import hash" }
+  $withTime = @($d.entries | Where-Object { $_.time_utc }).Count
+  if ($withTime -lt 100) { throw "only $withTime entries with a time" }
+  $states = @($d.entries | ForEach-Object { $_.enabled } | Sort-Object -Unique)
+  if ($states -notcontains 'enabled') { throw "entries carry no enabled state (seen: $($states -join ', '))" }
+  if (@($d.entries | Where-Object { $_.entry_description }).Count -lt 20) { throw 'service and task descriptions are missing' }
   $svcDll = @($d.entries | Where-Object { $_.entry -like '*(ServiceDll)' }).Count
   if ($svcDll -lt 50) { throw "only $svcDll service DLL entries" }
   $builtin = $d.entries | Where-Object { $_.category -eq 'drivers' -and $_.entry -eq 'Ntfs' } | Select-Object -First 1
