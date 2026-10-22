@@ -33,6 +33,10 @@ func indirectString(s string) string {
 	}
 	out := make([]uint16, 1024)
 	if r, _, _ := pSHLoadIndirectString.Call(uintptr(unsafe.Pointer(src)), uintptr(unsafe.Pointer(&out[0])), uintptr(len(out)), 0); r != 0 {
+		// "@oem1.inf,%key%;Default text": the string table of an INF is not loadable, the default text is
+		if i := strings.LastIndex(s, ";"); i >= 0 {
+			return strings.TrimSpace(s[i+1:])
+		}
 		return ""
 	}
 	return windows.UTF16ToString(out)
@@ -100,7 +104,7 @@ func annotateEntries(entries []enrichEntry) {
 					e.Enabled = "disabled"
 				}
 				if m := taskDescriptionPattern.FindStringSubmatch(xml); m != nil {
-					e.TaskDescription = indirectString(m[1])
+					e.EntryDescription = strings.TrimSpace(m[1]) // shown verbatim, like Autoruns
 				}
 			}
 		case "services", "drivers":
