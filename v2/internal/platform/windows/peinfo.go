@@ -177,7 +177,8 @@ func importHash(path string) string {
 		if origFirst == 0 && nameRVA == 0 && first == 0 {
 			break
 		}
-		dll := strings.ToLower(cstring(nameRVA))
+		dllFull := strings.ToLower(cstring(nameRVA))
+		dll := dllFull
 		for _, ext := range []string{".dll", ".ocx", ".sys"} {
 			dll = strings.TrimSuffix(dll, ext)
 		}
@@ -212,7 +213,12 @@ func importHash(path string) string {
 				ordinalFlag = uint64(1) << 63
 			}
 			if v&ordinalFlag != 0 {
-				parts = append(parts, fmt.Sprintf("%s.ord%d", dll, v&0xFFFF))
+				ord := uint32(v & 0xFFFF)
+				if name, ok := importOrdinalNames[dllFull][ord]; ok {
+					parts = append(parts, dll+"."+strings.ToLower(name))
+				} else {
+					parts = append(parts, fmt.Sprintf("%s.ord%d", dll, ord))
+				}
 				continue
 			}
 			// hint/name entry: 2-byte hint then the NUL-terminated name

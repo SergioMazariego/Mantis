@@ -63,7 +63,8 @@ func keyTimeUTC(root registry.Key, path string) string {
 }
 
 var (
-	taskDisabledPattern    = regexp.MustCompile(`(?is)<Settings>.*?<Enabled>\s*false\s*</Enabled>`)
+	taskSettingsPattern    = regexp.MustCompile(`(?is)<Settings>(.*?)</Settings>`)
+	taskDisabledPattern    = regexp.MustCompile(`(?is)<Enabled>\s*false\s*</Enabled>`)
 	taskDescriptionPattern = regexp.MustCompile(`(?is)<RegistrationInfo>.*?<Description>\s*([^<]*?)\s*</Description>`)
 )
 
@@ -81,7 +82,7 @@ func startupApproved(root registry.Key, base, name string) (known, disabled bool
 	return true, b[0]&1 == 1 // 02/06 enabled, 03/07 disabled
 }
 
-// annotateEntries fills time_utc, enabled and description for the entries it understands.
+// annotateEntries fills key_time_utc, enabled and the descriptions for the entries it understands.
 func annotateEntries(entries []enrichEntry) {
 	tasksDir := windowsDir() + `\System32\Tasks`
 	for i := range entries {
@@ -91,30 +92,51 @@ func annotateEntries(entries []enrichEntry) {
 		case "scheduled_tasks":
 			file := extended(tasksDir + e.Entry)
 			if st, err := os.Stat(file); err == nil {
-				e.TimeUTC = st.ModTime().UTC().Format(time.RFC3339Nano)
+				e.KeyTimeUTC = st.ModTime().UTC().Format(time.RFC3339Nano)
 			}
 			if data, err := os.ReadFile(file); err == nil && len(data) < 4<<20 {
 				xml := utf16OrUTF8(data)
-				if taskDisabledPattern.MatchString(xml) {
+				if m := taskSettingsPattern.FindStringSubmatch(xml); m != nil && taskDisabledPattern.MatchString(m[1]) {
 					e.Enabled = "disabled"
 				}
 				if m := taskDescriptionPattern.FindStringSubmatch(xml); m != nil {
-					e.EntryDescription = indirectString(m[1])
+					e.TaskDescription = indirectString(m[1])
 				}
 			}
 		case "services", "drivers":
 			name := strings.TrimSuffix(e.Entry, " (ServiceDll)")
 			path := `SYSTEM\CurrentControlSet\Services\` + name
-			e.TimeUTC = keyTimeUTC(registry.LOCAL_MACHINE, path)
+			e.KeyTimeUTC = keyTimeUTC(registry.LOCAL_MACHINE, path)
 			if k, err := registry.OpenKey(registry.LOCAL_MACHINE, path, registry.QUERY_VALUE|registry.WOW64_64KEY); err == nil {
 				if start, _, err := k.GetIntegerValue("Start"); err == nil && start == 4 {
 					e.Enabled = "disabled"
 				}
+				var display, desc string
+				if d, _, err := k.GetStringValue("DisplayName"); err == nil {
+					display = indirectString(d)
+				}
 				if d, _, err := k.GetStringValue("Description"); err == nil {
-					e.EntryDescription = indirectString(d)
+					desc = indirectString(d)
+				}
+				// Autoruns shows "<display name>: <description>" for services and drivers
+				switch {
+				case display != "" && desc != "":
+					e.EntryDescription = display + ": " + desc
+				case display != "":
+					e.EntryDescription = display
+				default:
+					e.EntryDescription = desc
 				}
 				k.Close()
 			}
+		case "network_providers":
+			// the provider's display name comes from its service key
+			if v := regStrings(registry.LOCAL_MACHINE, `SYSTEM\CurrentControlSet\Services\`+e.Entry+`\NetworkProvider`, registry.WOW64_64KEY); v != nil {
+				if n := lookupValue(v, "Name"); len(n) > 0 {
+					e.EntryDescription = indirectString(n[0])
+				}
+			}
+			e.KeyTimeUTC = keyTimeUTC(registry.LOCAL_MACHINE, `SYSTEM\CurrentControlSet\Services\`+e.Entry)
 		default:
 			root, path, ok := splitRegistryLocation(e.Location)
 			if !ok {
@@ -126,9 +148,9 @@ func annotateEntries(entries []enrichEntry) {
 				first = first[:i]
 			}
 			if t := keyTimeUTC(root, path+`\`+first); t != "" && first != "" {
-				e.TimeUTC = t
+				e.KeyTimeUTC = t
 			} else {
-				e.TimeUTC = keyTimeUTC(root, path)
+				e.KeyTimeUTC = keyTimeUTC(root, path)
 			}
 			if e.Category == "logon" {
 				base, name := "", e.Entry
