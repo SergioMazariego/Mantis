@@ -29,3 +29,27 @@ func TestSelectByIDIsExplicitAndRejectsUnknown(t *testing.T) {
 type nilReader struct{}
 
 func (nilReader) Read([]byte) (int, error) { return 0, io.EOF }
+
+func TestMatchProfileRecognizesExactBuiltInSelections(t *testing.T) {
+	mk := func(id string, p collector.ProfileMask, sensitive bool) collector.Source {
+		return collector.Source{ID: id, Meta: collector.Meta{Profiles: p, Sensitive: sensitive}}
+	}
+	all := []collector.Source{
+		mk("a", collector.InAll, false), mk("b", collector.InStdFull, false), mk("c", collector.InFullOnly, false), mk("s", collector.InFullOnly, true),
+	}
+	if name, p := matchProfile(all, []collector.Source{all[0]}); name != "quick" || p != collector.ProfileQuick {
+		t.Errorf("quick selection recognized as %q", name)
+	}
+	if name, _ := matchProfile(all, []collector.Source{all[0], all[1]}); name != "standard" {
+		t.Errorf("standard selection recognized as %q", name)
+	}
+	if name, _ := matchProfile(all, []collector.Source{all[0], all[1], all[2]}); name != "full" {
+		t.Errorf("full selection (sensitive excluded) recognized as %q", name)
+	}
+	if name, _ := matchProfile(all, []collector.Source{all[0], all[2]}); name != "" {
+		t.Errorf("a mixed selection must stay custom, got %q", name)
+	}
+	if name, _ := matchProfile(all, []collector.Source{all[0], all[1], all[2], all[3]}); name != "" {
+		t.Errorf("a selection including a sensitive source must stay custom, got %q", name)
+	}
+}

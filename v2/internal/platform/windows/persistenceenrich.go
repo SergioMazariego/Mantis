@@ -43,13 +43,16 @@ const (
 )
 
 type enrichEntry struct {
-	Category     string `json:"category"`
-	Location     string `json:"location"`
-	Entry        string `json:"entry"`
-	Profile      string `json:"profile"`
-	LaunchString string `json:"launch_string"`
-	ImagePath    string `json:"image_path,omitempty"`
-	LaunchTarget string `json:"launch_target,omitempty"` // DLL run through rundll32, resolved like ImagePath
+	Category         string `json:"category"`
+	Location         string `json:"location"`
+	Entry            string `json:"entry"`
+	Profile          string `json:"profile"`
+	LaunchString     string `json:"launch_string"`
+	ImagePath        string `json:"image_path,omitempty"`
+	LaunchTarget     string `json:"launch_target,omitempty"`     // DLL run through rundll32, resolved like ImagePath
+	TimeUTC          string `json:"time_utc,omitempty"`          // last write of the key (or task file) that holds the entry
+	Enabled          string `json:"enabled,omitempty"`           // enabled or disabled (StartupApproved, service start type, task settings)
+	EntryDescription string `json:"entry_description,omitempty"` // service or task description (the file description is on the image)
 }
 
 type enrichedImage struct {
@@ -67,6 +70,10 @@ type enrichedImage struct {
 	ProductName      string `json:"product_name,omitempty"`
 	FileVersion      string `json:"file_version,omitempty"`
 	FileVersionFixed string `json:"file_version_numeric,omitempty"`
+	Signer           string `json:"signer,omitempty"`  // certificate that signed the file (embedded or catalog)
+	PESHA1           string `json:"pe_sha1,omitempty"` // Authenticode image hash
+	PESHA256         string `json:"pe_sha256,omitempty"`
+	ImportHash       string `json:"imphash,omitempty"` // MD5 of the import table
 	OriginalName     string `json:"original_filename,omitempty"`
 	Error            string `json:"error,omitempty"`
 }
@@ -219,7 +226,9 @@ func (e *imageEnricher) describe(ctx context.Context, path string) *enrichedImag
 			img.MD5, img.SHA1, img.SHA256 = hex.EncodeToString(hm.Sum(nil)), hex.EncodeToString(hs1.Sum(nil)), hex.EncodeToString(hs256.Sum(nil))
 		}
 	}
-	img.Authenticode, img.AuthenticodeCode = verifySignature(path)
+	img.Authenticode, img.AuthenticodeCode, img.Signer = verifySignatureDetail(path)
+	img.PESHA1, img.PESHA256 = peHashes(path)
+	img.ImportHash = importHash(path)
 	img.Company, img.Description, img.ProductName, img.FileVersion, img.OriginalName = fileVersionStrings(path)
 	img.FileVersionFixed = fixedFileVersion(path)
 	return img
@@ -447,6 +456,7 @@ func collectEnrichEntries(ctx context.Context, w *warnings) []enrichEntry {
 
 func persistenceEnriched(ctx context.Context, w *warnings) (any, error) {
 	entries := collectEnrichEntries(ctx, w)
+	annotateEntries(entries)
 	enr := &imageEnricher{seen: map[string]*enrichedImage{}}
 	for i := range entries {
 		if err := ctx.Err(); err != nil {

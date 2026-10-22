@@ -249,9 +249,16 @@ var wvtGenericVerifyV2 = windows.GUID{Data1: 0x00AAC56B, Data2: 0xCD44, Data3: 0
 // catalog-signed (most Windows binaries) report "no embedded signature"; this is a
 // documented limitation of the embedded-only check.
 func verifySignature(path string) (string, string) {
+	st, code, _ := verifySignatureDetail(path)
+	return st, code
+}
+
+// verifySignatureDetail is verifySignature plus the name of the signer certificate (embedded signature, or the
+// catalog signer for catalog-signed files).
+func verifySignatureDetail(path string) (string, string, string) {
 	p, err := windows.UTF16PtrFromString(path)
 	if err != nil {
-		return "unknown", err.Error()
+		return "unknown", err.Error(), ""
 	}
 	fi := wintrustFileInfo{FilePath: p}
 	fi.Size = uint32(unsafe.Sizeof(fi))
@@ -260,28 +267,32 @@ func verifySignature(path string) (string, string) {
 	data.Size = uint32(unsafe.Sizeof(data))
 	invalidHwnd := ^uintptr(0)
 	r, _, _ := pWinVerifyTrust.Call(invalidHwnd, uintptr(unsafe.Pointer(&wvtGenericVerifyV2)), uintptr(unsafe.Pointer(&data)))
+	signer := ""
+	if uint32(r) == 0 {
+		signer = signerFromState(data.StateData)
+	}
 	data.StateAction = 2 // WTD_STATEACTION_CLOSE
 	pWinVerifyTrust.Call(invalidHwnd, uintptr(unsafe.Pointer(&wvtGenericVerifyV2)), uintptr(unsafe.Pointer(&data)))
 	code := fmt.Sprintf("0x%08X", uint32(r))
 	switch uint32(r) {
 	case 0:
-		return "valid", code
+		return "valid", code, signer
 	case 0x800B0100:
 		// most Windows binaries are catalog-signed: look the file hash up in the catalog database
-		if st, cc, found := verifyCatalogSignature(path); found {
-			return st, cc
+		if st, cc, sg, found := verifyCatalogSignatureDetail(path); found {
+			return st, cc, sg
 		}
-		return "unsigned (no embedded signature and no catalog entry)", code
+		return "unsigned (no embedded signature and no catalog entry)", code, ""
 	case 0x80096010:
-		return "signature present but digest mismatch (modified file)", code
+		return "signature present but digest mismatch (modified file)", code, ""
 	case 0x800B0101:
-		return "certificate expired", code
+		return "certificate expired", code, ""
 	case 0x800B0109, 0x800B010A:
-		return "signature present, chain not trusted", code
+		return "signature present, chain not trusted", code, ""
 	case 0x80092003, 0x800B0001:
-		return "could not verify (file unreadable or trust provider unavailable)", code
+		return "could not verify (file unreadable or trust provider unavailable)", code, ""
 	}
-	return "invalid or untrusted", code
+	return "invalid or untrusted", code, ""
 }
 
 // ---- process snapshot ----
