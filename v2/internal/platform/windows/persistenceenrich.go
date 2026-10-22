@@ -50,9 +50,11 @@ type enrichEntry struct {
 	LaunchString     string `json:"launch_string"`
 	ImagePath        string `json:"image_path,omitempty"`
 	LaunchTarget     string `json:"launch_target,omitempty"`     // DLL run through rundll32, resolved like ImagePath
-	TimeUTC          string `json:"time_utc,omitempty"`          // last write of the key (or task file) that holds the entry
+	TimeUTC          string `json:"time_utc,omitempty"`          // last write time of the image file (the "Time" an Autoruns scan reports)
+	KeyTimeUTC       string `json:"key_time_utc,omitempty"`      // last write of the registry key (or task file) that holds the entry
 	Enabled          string `json:"enabled,omitempty"`           // enabled or disabled (StartupApproved, service start type, task settings)
-	EntryDescription string `json:"entry_description,omitempty"` // service or task description (the file description is on the image)
+	EntryDescription string `json:"entry_description,omitempty"` // "<display name>: <description>" of a service or driver, or the provider name; else use the image description
+	TaskDescription  string `json:"task_description,omitempty"`  // description written in the task definition
 }
 
 type enrichedImage struct {
@@ -470,7 +472,9 @@ func persistenceEnriched(ctx context.Context, w *warnings) (any, error) {
 			w.add("enrichment stopped after %d distinct image paths", maxEnrichedPaths)
 			break
 		}
-		enr.describe(ctx, entries[i].ImagePath)
+		if img := enr.describe(ctx, entries[i].ImagePath); img != nil {
+			entries[i].TimeUTC = img.ModifiedUTC
+		}
 		// rundll32 entries run a function exported by the DLL named in their arguments: that DLL is the payload
 		if tgt := launchTarget(entries[i].LaunchString, entries[i].ImagePath); tgt != "" {
 			entries[i].LaunchTarget = tgt

@@ -277,6 +277,7 @@ func evtxChannelSource(name string, parent collector.Meta) collector.Source {
 	m.Name, m.SourceType, m.SourcePath = name, "eventlog", name
 	m.DestPath = "eventlogs/" + channelFileName(name)
 	m.Profiles = 0
+	m.ActionTypes = channelActions(name)
 	return collector.Source{
 		ID: "evtx-" + safeID(name), Kind: "windows.evtx", Locator: "eventlog://" + name, Method: "EvtExportLog/v1 (EvtExportLogChannelPath)", MaxBytes: 4 << 30, Meta: m,
 		Open: func(ctx context.Context) (io.ReadCloser, error) {

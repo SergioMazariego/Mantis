@@ -49,6 +49,9 @@ func Sources() []collector.Source {
 		if s.Meta.Name == "" {
 			s.Meta.Name = s.ID
 		}
+		if a, ok := sourceActions[s.ID]; ok {
+			s.Meta.ActionTypes = a
+		}
 		if s.Meta.Privilege == collector.PrivAdmin || s.Meta.Privilege == collector.PrivDebug {
 			s = requiresAdmin(s) // so availability reports needs_admin instead of "available" when not elevated
 		}

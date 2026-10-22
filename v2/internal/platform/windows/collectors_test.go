@@ -197,3 +197,49 @@ func TestCatalogInvariants(t *testing.T) {
 		}
 	}
 }
+
+func TestActionTypesAreAssignedAndKeptApartFromSourceType(t *testing.T) {
+	byID := map[string]collector.Source{}
+	for _, s := range Sources() {
+		byID[s.ID] = s
+	}
+	for id, want := range map[string]string{
+		"execution-prefetch": collector.ActionRunExe, "users-recent-lnk": collector.ActionOpenFile,
+		"users-explorer-activity": collector.ActionViewFolder, "system-software": collector.ActionSoftwareInst,
+		"execution-crash-dumps": collector.ActionBlueScreen, "evtx-raw-files": collector.ActionTaskRun,
+	} {
+		s, ok := byID[id]
+		if !ok {
+			t.Errorf("%s missing from the catalog", id)
+			continue
+		}
+		found := false
+		for _, a := range s.Meta.ActionTypes {
+			found = found || a == want
+		}
+		if !found {
+			t.Errorf("%s should carry the action type %q, has %v", id, want, s.Meta.ActionTypes)
+		}
+		if s.Meta.SourceType == "" {
+			t.Errorf("%s lost its source type", id)
+		}
+	}
+	for ch, want := range map[string]string{
+		"Security": collector.ActionUserLogon, "System": collector.ActionSystemShutdown,
+		"Microsoft-Windows-TaskScheduler/Operational":   collector.ActionTaskRun,
+		"Microsoft-Windows-NetworkProfile/Operational":  collector.ActionNetConnected,
+		"Microsoft-Windows-WLAN-AutoConfig/Operational": collector.ActionWifiConnected,
+	} {
+		got := channelActions(ch)
+		found := false
+		for _, a := range got {
+			found = found || a == want
+		}
+		if !found {
+			t.Errorf("channel %s should evidence %q, has %v", ch, want, got)
+		}
+	}
+	if channelActions("Microsoft-Windows-Bits-Client/Operational") != nil {
+		t.Error("a channel that is not an activity source must carry no action type")
+	}
+}

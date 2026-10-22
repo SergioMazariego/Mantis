@@ -57,6 +57,7 @@ type Artifact struct {
 	Name        string            `json:"name,omitempty"`
 	Category    string            `json:"category"`
 	SourceType  string            `json:"source_type,omitempty"`
+	ActionTypes []string          `json:"action_types,omitempty"`
 	SourcePath  string            `json:"source_path,omitempty"`
 	Destination string            `json:"destination,omitempty"`
 	AcquiredUTC string            `json:"acquired_utc,omitempty"`
@@ -121,7 +122,7 @@ func Write(ctx context.Context, o Options) (*Summary, error) {
 			ID: it.SourceID, Collector: it.SourceID, Name: it.Meta.Name, Category: orDefault(it.Meta.Category, "other"),
 			SourceType: it.Meta.SourceType, SourcePath: orDefault(it.Meta.SourcePath, it.Locator), Method: it.Method,
 			Status: string(disp), Privilege: string(it.Meta.Privilege), Windows: it.Meta.Windows,
-			SideEffects: it.Meta.SideEffects, Coverage: it.Meta.Artifacts, Notes: it.Notes,
+			SideEffects: it.Meta.SideEffects, Coverage: it.Meta.Artifacts, ActionTypes: it.Meta.ActionTypes, Notes: it.Notes,
 		}
 		if !it.AcquiredAt.IsZero() {
 			art.AcquiredUTC = it.AcquiredAt.UTC().Format(time.RFC3339Nano)

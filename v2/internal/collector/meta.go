@@ -85,6 +85,7 @@ type Meta struct {
 	SideEffects string      // documented live-response side effects, if any
 	Sensitive   bool        // needs explicit operator confirmation before collection
 	Artifacts   []string    // coverage-catalog IDs this source satisfies
+	ActionTypes []string    // user/system activity this source can evidence (the ActionX vocabulary), apart from SourceType
 }
 
 // AvailState is the result of a read-only availability probe.
@@ -157,3 +158,31 @@ type MethodReporter interface{ AcquisitionMethod() string }
 // NotesReporter lets a reader attach structured notes (offsets, warnings) that
 // are recorded with the item after the bytes were read.
 type NotesReporter interface{ AcquisitionNotes() map[string]string }
+
+// Activity (action type) vocabulary. A source type says where evidence comes from (registry key, event log,
+// shortcut file...); an action type says what happened (a program ran, a file was opened...). The names follow
+// the common activity-timeline vocabulary so analysts can filter the manifest by action.
+const (
+	ActionRunExe         = "Run .EXE file"
+	ActionOpenSaveDialog = "Select file in open/save dialog-box"
+	ActionOpenFile       = "Open file or folder"
+	ActionViewFolder     = "View Folder in Explorer"
+	ActionSoftwareInst   = "Software Installation"
+	ActionSystemStarted  = "System Started"
+	ActionSystemShutdown = "System Shutdown"
+	ActionSleep          = "Sleep"
+	ActionResume         = "Resumed from sleep"
+	ActionNetConnected   = "Network Connected"
+	ActionNetDisconnect  = "Network Disconnected"
+	ActionSoftwareCrash  = "Software Crash"
+	ActionSoftwareHang   = "Software stopped responding (hang)"
+	ActionBlueScreen     = "Blue Screen"
+	ActionUserLogon      = "User Logon"
+	ActionUserLogoff     = "User Logoff"
+	ActionRestorePoint   = "Restore Point Created"
+	ActionInstallerStart = "Windows Installer Started"
+	ActionInstallerEnd   = "Windows Installer Ended"
+	ActionWifiConnected  = "Wireless Network Connected"
+	ActionWifiDisconnect = "Wireless Network Disconnected"
+	ActionTaskRun        = "Task Run"
+)
