@@ -21,6 +21,22 @@ var pSHLoadIndirectString = windows.NewLazySystemDLL("shlwapi.dll").NewProc("SHL
 // indirectString resolves "@file.dll,-123" resource references (as used by service and task descriptions).
 func indirectString(s string) string {
 	s = strings.TrimSpace(s)
+	if r := indirectStringStrict(s); r != "" || !strings.HasPrefix(s, "@") {
+		if r != "" {
+			return r
+		}
+		return s
+	}
+	// "@oem1.inf,%key%;Default text": the string table of an INF is not loadable, the default text is
+	if i := strings.LastIndex(s, ";"); i >= 0 {
+		return strings.TrimSpace(s[i+1:])
+	}
+	return ""
+}
+
+// indirectStringStrict returns the resolved text of a resource reference, or "" when it cannot be resolved.
+func indirectStringStrict(s string) string {
+	s = strings.TrimSpace(s)
 	if strings.HasPrefix(s, "$(") && strings.HasSuffix(s, ")") {
 		s = s[2 : len(s)-1]
 	}
@@ -33,10 +49,6 @@ func indirectString(s string) string {
 	}
 	out := make([]uint16, 1024)
 	if r, _, _ := pSHLoadIndirectString.Call(uintptr(unsafe.Pointer(src)), uintptr(unsafe.Pointer(&out[0])), uintptr(len(out)), 0); r != 0 {
-		// "@oem1.inf,%key%;Default text": the string table of an INF is not loadable, the default text is
-		if i := strings.LastIndex(s, ";"); i >= 0 {
-			return strings.TrimSpace(s[i+1:])
-		}
 		return ""
 	}
 	return windows.UTF16ToString(out)
@@ -104,7 +116,7 @@ func annotateEntries(entries []enrichEntry) {
 					e.Enabled = "disabled"
 				}
 				if m := taskDescriptionPattern.FindStringSubmatch(xml); m != nil {
-					e.EntryDescription = strings.TrimSpace(m[1]) // shown verbatim, like Autoruns
+					e.EntryDescription = indirectStringOrRaw(m[1]) // resolved when possible, otherwise as written, like Autoruns
 				}
 			}
 		case "services", "drivers":
@@ -115,21 +127,11 @@ func annotateEntries(entries []enrichEntry) {
 				if start, _, err := k.GetIntegerValue("Start"); err == nil && start == 4 {
 					e.Enabled = "disabled"
 				}
-				var display, desc string
 				if d, _, err := k.GetStringValue("DisplayName"); err == nil {
-					display = indirectString(d)
+					e.svcDisplay = indirectString(d)
 				}
 				if d, _, err := k.GetStringValue("Description"); err == nil {
-					desc = indirectString(d)
-				}
-				// Autoruns shows "<display name>: <description>" for services and drivers
-				switch {
-				case display != "" && desc != "":
-					e.EntryDescription = display + ": " + desc
-				case display != "":
-					e.EntryDescription = display
-				default:
-					e.EntryDescription = desc
+					e.svcDescription = indirectString(d)
 				}
 				k.Close()
 			}
@@ -176,4 +178,30 @@ func annotateEntries(entries []enrichEntry) {
 			}
 		}
 	}
+}
+
+// indirectStringOrRaw resolves a resource reference and keeps the text as written when it cannot be resolved.
+func indirectStringOrRaw(s string) string {
+	raw := strings.TrimSpace(s)
+	if r := indirectStringStrict(raw); r != "" {
+		return r
+	}
+	return raw
+}
+
+// describeServiceEntry composes the description Autoruns shows for a service or driver:
+// "<display name>: <description>", where the description is the service one or, without it, the file's.
+func describeServiceEntry(name, display, svcDesc, fileDesc string) string {
+	first := display
+	if first == "" {
+		first = name
+	}
+	second := svcDesc
+	if second == "" {
+		second = fileDesc
+	}
+	if second == "" {
+		return first
+	}
+	return first + ": " + second
 }
