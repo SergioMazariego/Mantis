@@ -127,7 +127,13 @@ mantis-collect --profile standard                 # quick, standard or full, wit
 mantis-collect --profile full --confirm-sensitive # include sensitive sources, explicitly approved
 mantis-collect --artifacts process-snapshot,tcp-connections
 mantis-collect --output D:\evidence               # package location; must be NTFS on Windows
+mantis-collect --profile standard --temp-types executable,library,script   # Windows\Temp: only these kinds of file
+mantis-collect --profile standard --temp-ext exe,dll,ps1 --temp-modified-days 30
 ```
+
+**Narrowing the Windows Temp collection.** By default `C:\Windows\Temp` is copied in full (up to 8000 files, depth 6, 128 MiB per file). To bring back only what matters for malware triage, combine `--temp-ext` (extensions), `--temp-types` (`executable`, `library`, `script`, `archive`, `document`, `shortcut`), `--temp-max-file-mb`, `--temp-modified-days`, `--temp-max-files` and `--temp-depth`. Types match by name **and** by the first bytes of the file, so a payload renamed to `.tmp` or `.dat` is still found. The package states the filter and how many files were left out on purpose.
+
+Every copied file and exported event log records the source file's **creation, last access and last write times** (`source_created_utc`, `source_accessed_utc`, `source_modified_utc`) in its manifest notes. They are read before the content, with a handle that cannot alter them.
 
 Useful options: `--case`, `--tenant`, `--actor` and `--title` label the case; `--max-total-bytes` sets the collection cap; `--cli` forces the terminal menu; `--force` continues when free space looks short.
 

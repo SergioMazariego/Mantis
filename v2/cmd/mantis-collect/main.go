@@ -42,6 +42,14 @@ var selectionContext struct {
 type platformOptions struct {
 	TempDir    string   // scratch directory for staged exports (inside the output directory)
 	MemoryPIDs []uint32 // processes explicitly approved for memory dumps
+
+	// Narrowing of the Windows Temp collection; all zero keeps every file.
+	TempExtensions   []string
+	TempTypes        []string
+	TempMaxFileMB    int64
+	TempModifiedDays int
+	TempMaxFiles     int
+	TempMaxDepth     int
 }
 
 // packageOutcome records the evidence package written by the last collection.
@@ -66,6 +74,12 @@ func run() int {
 	outputFlag := flag.String("output", "", "evidence package directory (default: next to the executable; must be NTFS)")
 	confirmSensitive := flag.Bool("confirm-sensitive", false, "approve sources that are sensitive or alter the system")
 	memoryPIDs := flag.String("memory-pids", "", "comma-separated PIDs approved for process memory dumps")
+	tempExt := flag.String("temp-ext", "", "Windows Temp: keep only these extensions, comma-separated (e.g. exe,dll,ps1)")
+	tempTypes := flag.String("temp-types", "", "Windows Temp: keep only these file types, matched by name or content signature: "+tempTypeNames)
+	tempMaxMB := flag.Int64("temp-max-file-mb", 0, "Windows Temp: skip files larger than this many MiB (0: collector limit of 128)")
+	tempDays := flag.Int("temp-modified-days", 0, "Windows Temp: keep only files modified in the last N days (0: any age)")
+	tempFiles := flag.Int("temp-max-files", 0, "Windows Temp: stop after this many files (0: 8000)")
+	tempDepth := flag.Int("temp-depth", 0, "Windows Temp: maximum folder depth (0: 6)")
 	force := flag.Bool("force", false, "continue even if free space looks insufficient")
 	cliSelect := flag.Bool("cli", false, "select sources interactively in the terminal")
 	showVersion := flag.Bool("version", false, "print version and exit")
@@ -74,7 +88,7 @@ func run() int {
 		fmt.Printf("mantis-collect %s (commit %s, built %s, %s/%s)\n", version, commit, date, runtime.GOOS, runtime.GOARCH)
 		return 0
 	}
-	if flag.NArg() != 0 || *maxTotal < 0 {
+	if flag.NArg() != 0 || *maxTotal < 0 || *tempMaxMB < 0 || *tempDays < 0 || *tempFiles < 0 || *tempDepth < 0 {
 		fmt.Fprintln(os.Stderr, "invalid arguments")
 		return 2
 	}
@@ -97,7 +111,12 @@ func run() int {
 		return 2
 	}
 
-	platformConfigure(platformOptions{MemoryPIDs: pids})
+	base := platformOptions{MemoryPIDs: pids, TempExtensions: splitList(*tempExt), TempTypes: splitList(*tempTypes),
+		TempMaxFileMB: *tempMaxMB, TempModifiedDays: *tempDays, TempMaxFiles: *tempFiles, TempMaxDepth: *tempDepth}
+	if err := platformConfigure(base); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
 	sources := platformSources()
 	if len(sources) == 0 {
 		fmt.Fprintln(os.Stderr, collector.ErrNoSources)
@@ -114,7 +133,11 @@ func run() int {
 		return 1
 	}
 	dataDir := filepath.Join(outDir, ".mantis")
-	platformConfigure(platformOptions{TempDir: filepath.Join(dataDir, "tmp"), MemoryPIDs: pids})
+	base.TempDir = filepath.Join(dataDir, "tmp")
+	if err := platformConfigure(base); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
 
 	forceCLISelection = *cliSelect
 	selectionContext.Case, selectionContext.Profile = *caseIDValue, runtime.GOOS+".p0"
@@ -338,6 +361,9 @@ func runCollection(ctx context.Context, cfg runConfig, sources []collector.Sourc
 	if runErr != nil {
 		notes = append(notes, "collection ended early: "+runErr.Error())
 	}
+	if n := platformFilterNote(); n != "" {
+		notes = append(notes, n)
+	}
 	sum, exportErr := pkgexport.Write(context.Background(), pkgexport.Options{
 		Dir: cfg.outDir, CaseID: cfg.caseID, TenantID: cfg.tenant, HostID: hostID, Host: host, ToolVersion: version,
 		Profile: cfg.profile, Privilege: privilege, StartedAt: started, FinishedAt: time.Now().UTC(), Items: results,
@@ -423,6 +449,19 @@ func resolveOutputDir(flagValue, caseID string) (string, error) {
 		return filepath.Join(base, name), nil
 	}
 	return "", errors.New("no writable location for the evidence package; pass --output")
+}
+
+const tempTypeNames = "executable, library, script, archive, document, shortcut"
+
+// splitList turns "a, b,,c" into [a b c].
+func splitList(s string) []string {
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		if p := strings.TrimSpace(part); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func parsePIDs(s string) ([]uint32, error) {

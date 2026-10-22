@@ -87,6 +87,7 @@ type walkSpec struct {
 	MaxDepth int
 	FileMax  int64
 	SkipDir  func(rel string) bool
+	Filter   func(path string, info os.FileInfo) bool // operator-chosen narrowing applied after Match; nil keeps everything
 }
 
 // walkGroup creates a group source whose children are the matching files, each
@@ -248,6 +249,9 @@ func walkFilesStatus(ctx context.Context, root string, spec walkSpec, fn func(pa
 			info, err := e.Info()
 			if err != nil {
 				noteErr(err, "unreadable entry %s: %v", path, err)
+				continue
+			}
+			if spec.Filter != nil && !spec.Filter(path, info) {
 				continue
 			}
 			if !fn(path, info.Size()) {

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"github.com/SergioMazariego/Mantis/v2/internal/collector"
@@ -23,6 +24,7 @@ import (
 type Options struct {
 	TempDir    string
 	MemoryPIDs []uint32
+	TempFilter FileFilter // narrows the Windows Temp collection (extensions, types, size, age, limits)
 }
 
 var (
@@ -257,10 +259,15 @@ func openFile(ctx context.Context, path string) (*acqReader, error) {
 	if cloudPlaceholder(path) {
 		return nil, fmt.Errorf("%w: %s is a cloud placeholder (not hydrated); it is not downloaded during acquisition", collector.ErrNotSupported, path)
 	}
+	// The source times are read before the content so that acquisition itself cannot alter what is recorded.
+	times := fileTimeNotes(path)
 	direct, derr := directOpen(path)
 	if derr == nil {
-		return &acqReader{r: &ctxReader{ctx, direct}, closer: direct.Close, method: "win32-shared-read",
-			notes: map[string]string{"read_mode": "FILE_SHARE_READ|WRITE|DELETE, backup semantics"}}, nil
+		notes := map[string]string{"read_mode": "FILE_SHARE_READ|WRITE|DELETE, backup semantics"}
+		for k, v := range times {
+			notes[k] = v
+		}
+		return &acqReader{r: &ctxReader{ctx, direct}, closer: direct.Close, method: "win32-shared-read", notes: notes}, nil
 	}
 	cerr := classifyErr(derr)
 	if isTrulyAbsent(derr) {
@@ -283,12 +290,48 @@ func openFile(ctx context.Context, path string) (*acqReader, error) {
 		}
 		return nil, fmt.Errorf("raw NTFS open %s: %w (direct read failed: %v)", path, err, derr)
 	}
-	return &acqReader{r: &ctxReader{ctx, f.NewReader()}, method: "ntfs-raw-read",
-		notes: map[string]string{
-			"read_mode":     "raw volume read via NTFS parser; direct read failed: " + derr.Error(),
-			"consistency":   "live raw read, not point-in-time consistent",
-			"volume_serial": vol.Info().VolumeSerialHex,
-		}}, nil
+	notes := map[string]string{
+		"read_mode":     "raw volume read via NTFS parser; direct read failed: " + derr.Error(),
+		"consistency":   "live raw read, not point-in-time consistent",
+		"volume_serial": vol.Info().VolumeSerialHex,
+	}
+	for k, v := range times { // the Win32 query can succeed on a locked file whose content cannot be opened
+		notes[k] = v
+	}
+	if len(times) == 0 { // otherwise take them from $STANDARD_INFORMATION
+		ts := f.Timestamps()
+		for k, t := range map[string]time.Time{"source_created_utc": ts.Created, "source_accessed_utc": ts.Accessed, "source_modified_utc": ts.Modified} {
+			if !t.IsZero() {
+				notes[k] = t.UTC().Format(time.RFC3339Nano)
+			}
+		}
+	}
+	return &acqReader{r: &ctxReader{ctx, f.NewReader()}, method: "ntfs-raw-read", notes: notes}, nil
+}
+
+// fileTimeNotes returns the creation, last access and last write times of a file as notes. The handle asks only for
+// attribute access, so querying never changes the times it reports. Empty when the file cannot be queried.
+func fileTimeNotes(path string) map[string]string {
+	p, err := windows.UTF16PtrFromString(extended(stripStream(path)))
+	if err != nil {
+		return nil
+	}
+	h, err := windows.CreateFile(p, windows.FILE_READ_ATTRIBUTES, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
+		nil, windows.OPEN_EXISTING, windows.FILE_FLAG_BACKUP_SEMANTICS, 0)
+	if err != nil {
+		return nil
+	}
+	defer windows.CloseHandle(h)
+	var info windows.ByHandleFileInformation
+	if err := windows.GetFileInformationByHandle(h, &info); err != nil {
+		return nil
+	}
+	utc := func(ft windows.Filetime) string { return time.Unix(0, ft.Nanoseconds()).UTC().Format(time.RFC3339Nano) }
+	return map[string]string{
+		"source_created_utc":  utc(info.CreationTime),
+		"source_accessed_utc": utc(info.LastAccessTime),
+		"source_modified_utc": utc(info.LastWriteTime),
+	}
 }
 
 func firstTyped(errs ...error) error {

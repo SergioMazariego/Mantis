@@ -184,6 +184,15 @@ Check 'V-ACTIONS: the manifest carries an action type apart from the source type
   if ($lnk -and $lnk.action_types -notcontains 'Open file or folder') { throw 'recent shortcuts do not list Open file or folder' }
   $true
 }
+Check 'V-TIMES: exported event logs and copied files keep the source creation, access and modification times' {
+  $sys = $man.artifacts | Where-Object { $_.id -eq 'evtx-System' } | Select-Object -First 1
+  if (-not $sys -or -not $sys.notes.source_created_utc -or -not $sys.notes.source_accessed_utc -or -not $sys.notes.source_modified_utc) { throw 'the exported System log carries no source file times' }
+  $files = @($man.artifacts | Where-Object { $_.method -like 'win32-shared-read' -and $_.status -like 'collected*' })
+  if ($files.Count -eq 0) { throw 'no copied file to check' }
+  $without = @($files | Where-Object { -not $_.notes.source_created_utc -or -not $_.notes.source_modified_utc })
+  if ($without.Count -gt 0.1 * $files.Count) { throw "$($without.Count) of $($files.Count) copied files lack source times" }
+  $true
+}
 Check 'V-SYSTEM: disks report offline, read_only and dynamic state' {
   $disk = ((Text 'system\system-disks.json' | ConvertFrom-Json).data.physical_disks) | Select-Object -First 1
   $disk -and ($disk.PSObject.Properties.Name -contains 'offline') -and ($disk.PSObject.Properties.Name -contains 'read_only')

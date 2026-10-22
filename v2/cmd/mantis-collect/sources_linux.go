@@ -12,7 +12,9 @@ import (
 	"github.com/SergioMazariego/Mantis/v2/internal/platform/linux"
 )
 
-func platformConfigure(platformOptions) {}
+func platformConfigure(platformOptions) error { return nil }
+
+func platformFilterNote() string { return "" }
 
 func platformSources() []collector.Source {
 	sources := linux.Sources()
