@@ -173,6 +173,16 @@ Check 'V-PROC: performance counters (priority, CPU times, virtual size, pools, t
   if ($common -lt 0.8 * $detailed.Count) { throw "only $common of $($detailed.Count) detailed processes appear in the performance snapshot" }
   $true
 }
+Check 'V-ACTIONS: the manifest carries an action type apart from the source type' {
+  $with = @($man.artifacts | Where-Object { $_.action_types })
+  if ($with.Count -lt 20) { throw "only $($with.Count) artifacts carry action_types" }
+  if (@($with | Where-Object { -not $_.source_type }).Count -gt 0) { throw 'an artifact with action_types has no source_type' }
+  $sys = $man.artifacts | Where-Object { $_.id -eq 'evtx-System' } | Select-Object -First 1
+  if (-not $sys -or $sys.action_types -notcontains 'System Shutdown') { throw 'the System event log does not list System Shutdown' }
+  $lnk = $man.artifacts | Where-Object { $_.id -like 'users-recent-lnk*' -and $_.status -like 'collected*' } | Select-Object -First 1
+  if ($lnk -and $lnk.action_types -notcontains 'Open file or folder') { throw 'recent shortcuts do not list Open file or folder' }
+  $true
+}
 Check 'V-SYSTEM: disks report offline, read_only and dynamic state' {
   $disk = ((Text 'system\system-disks.json' | ConvertFrom-Json).data.physical_disks) | Select-Object -First 1
   $disk -and ($disk.PSObject.Properties.Name -contains 'offline') -and ($disk.PSObject.Properties.Name -contains 'read_only')

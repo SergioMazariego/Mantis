@@ -297,6 +297,9 @@ func inheritMeta(parent, child Meta) Meta {
 	if len(child.Artifacts) == 0 {
 		child.Artifacts = parent.Artifacts
 	}
+	if len(child.ActionTypes) == 0 {
+		child.ActionTypes = parent.ActionTypes
+	}
 	child.Sensitive = child.Sensitive || parent.Sensitive
 	return child
 }
