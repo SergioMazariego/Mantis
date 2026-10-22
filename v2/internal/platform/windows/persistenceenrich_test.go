@@ -122,3 +122,21 @@ func TestPEDetailsOfASystemBinary(t *testing.T) {
 		t.Errorf("import hash of the test binary must be 32 hex characters, got %q", h)
 	}
 }
+
+func TestDescribeServiceEntryFollowsTheAutorunsModel(t *testing.T) {
+	cases := []struct{ name, display, svc, file, want string }{
+		{"AJRouter", "AllJoyn Router Service", "Routes AllJoyn messages", "x", "AllJoyn Router Service: Routes AllJoyn messages"},
+		{"ACPI", "Microsoft ACPI Driver", "", "ACPI Driver for NT", "Microsoft ACPI Driver: ACPI Driver for NT"},
+		{"Odd", "", "", "", "Odd"},
+		{"NoDisplay", "", "text", "", "NoDisplay: text"},
+		{"OnlyDisplay", "Shown", "", "", "Shown"},
+	}
+	for _, c := range cases {
+		if got := describeServiceEntry(c.name, c.display, c.svc, c.file); got != c.want {
+			t.Errorf("describeServiceEntry(%q) = %q, want %q", c.name, got, c.want)
+		}
+	}
+	if got := indirectStringOrRaw("$(@%SystemRoot%" + `\no-such-file.dll,-1` + ")"); !strings.HasPrefix(got, "$(@") {
+		t.Errorf("an unresolvable reference must be kept as written, got %q", got)
+	}
+}

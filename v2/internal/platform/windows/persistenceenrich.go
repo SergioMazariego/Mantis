@@ -51,6 +51,8 @@ type enrichEntry struct {
 	ImagePath        string `json:"image_path,omitempty"`
 	LauncherPath     string `json:"launcher_path,omitempty"` // rundll32/regsvr32 when the image is the DLL it loads
 	imageHint        string // resolved instead of the launch string when set (service DLL)
+	svcDisplay       string // service display name, resolved
+	svcDescription   string // service description, resolved
 	TimeUTC          string `json:"time_utc,omitempty"`          // last write time of the image file (the "Time" an Autoruns scan reports)
 	KeyTimeUTC       string `json:"key_time_utc,omitempty"`      // last write of the registry key (or task file) that holds the entry
 	Enabled          string `json:"enabled,omitempty"`           // enabled or disabled (StartupApproved, service start type, task settings)
@@ -496,6 +498,21 @@ func persistenceEnriched(ctx context.Context, w *warnings) (any, error) {
 			if img := enr.describe(ctx, tgt); img != nil {
 				entries[i].TimeUTC = img.ModifiedUTC
 			}
+		}
+	}
+	// the description shown for an entry follows Autoruns: services and drivers "<display name>: <description or
+	// file description>", providers and tasks their own text, everything else the description of the image file
+	for i := range entries {
+		e := &entries[i]
+		fileDesc := ""
+		if im := enr.seen[strings.ToLower(e.ImagePath)]; im != nil {
+			fileDesc = im.Description
+		}
+		switch {
+		case e.Category == "services" || e.Category == "drivers":
+			e.EntryDescription = describeServiceEntry(e.Entry, e.svcDisplay, e.svcDescription, fileDesc)
+		case e.EntryDescription == "":
+			e.EntryDescription = fileDesc
 		}
 	}
 	images := make([]*enrichedImage, 0, len(enr.seen))
