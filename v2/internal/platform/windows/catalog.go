@@ -3,6 +3,7 @@
 package windows
 
 import (
+	"os"
 	"sort"
 	"strings"
 
@@ -80,8 +81,26 @@ func Sources() []collector.Source {
 // tempSources restores v1's Windows Temp acquisition with raw file copies (v1 used xcopy).
 func tempSources() []collector.Source {
 	m := baseMeta("Windows Temp folder", "Files in %SystemRoot%\\Temp: transient installers, dropped tools and staging artifacts (v1 parity, with per-file hashes)", "execution", collector.PrivUser, collector.InStdFull)
-	return []collector.Source{walkGroup("execution-windows-temp", m, windowsDir()+`\Temp`, walkSpec{
-		Roots: staticRoots(windowsDir() + `\Temp`), MaxDepth: 6, MaxFiles: 8000, FileMax: 128 << 20})}
+	spec := walkSpec{Roots: staticRoots(windowsDir() + `\Temp`), MaxDepth: 6, MaxFiles: 8000, FileMax: 128 << 20}
+	// The operator may narrow Temp to the files that matter (for example executables and scripts only).
+	if f := currentOptions().TempFilter; f.Active() {
+		if f.MaxDepth > 0 {
+			spec.MaxDepth = f.MaxDepth
+		}
+		if f.MaxFiles > 0 {
+			spec.MaxFiles = f.MaxFiles
+		}
+		if f.MaxFileBytes > 0 && f.MaxFileBytes < spec.FileMax {
+			spec.FileMax = f.MaxFileBytes
+		}
+		spec.Filter = func(path string, info os.FileInfo) bool {
+			ok := f.keep(path, info)
+			tempFilterSeen.Store(path, ok) // keyed by path: the size estimate and the expansion both walk the folder
+			return ok
+		}
+		m.Description += " [filtered: " + f.Describe() + "]"
+	}
+	return []collector.Source{walkGroup("execution-windows-temp", m, windowsDir()+`\Temp`, spec)}
 }
 
 // annotateLegacy keeps the original v1-parity collectors (stable IDs) available for custom

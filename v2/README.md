@@ -18,6 +18,7 @@ mantis-collect --artifacts id,id                 # specific sources
 mantis-collect --all                             # every registered source (sensitive ones need --confirm-sensitive)
 mantis-collect --output D:\evidence              # package location (default: next to the executable; must be NTFS)
 mantis-collect --confirm-sensitive --memory-pids 1234   # opt-in sensitive sources (memory dumps need the memdump build)
+mantis-collect --temp-types executable,script    # Windows\Temp: only these types (by name or content signature); also --temp-ext, --temp-max-file-mb, --temp-modified-days, --temp-max-files, --temp-depth
 mantis-collect --version
 ```
 

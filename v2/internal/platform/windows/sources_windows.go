@@ -496,6 +496,7 @@ func exportLog(ctx context.Context, name string) (io.ReadCloser, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	notes := channelFileTimes(name) // before the export touches the file
 	tmp, err := os.CreateTemp(scratchDir(), "mantis-evtx-*.evtx")
 	if err != nil {
 		return nil, err
@@ -536,12 +537,32 @@ func exportLog(ctx context.Context, name string) (io.ReadCloser, error) {
 		os.Remove(path)
 		return nil, err
 	}
-	return &removeOnClose{File: file, path: path}, nil
+	return &removeOnClose{File: file, path: path, notes: notes}, nil
 }
 
 type removeOnClose struct {
 	*os.File
-	path string
+	path  string
+	notes map[string]string
+}
+
+func (f *removeOnClose) AcquisitionNotes() map[string]string { return f.notes }
+
+// channelFileTimes returns the times of the .evtx file that backs a channel. The export is a new file, so these are
+// the only record of when the live log was created, last written and last accessed.
+func channelFileTimes(name string) map[string]string {
+	lp := readChannelConfig(name).LogFilePath
+	if lp == "" {
+		return nil
+	}
+	if exp, err := registry.ExpandString(lp); err == nil {
+		lp = exp
+	}
+	notes := fileTimeNotes(lp)
+	if notes != nil {
+		notes["source_file"] = lp
+	}
+	return notes
 }
 
 func (f *removeOnClose) Close() error {
