@@ -13,7 +13,9 @@ import (
 )
 
 func TestProtectionNameDecodesTypeAndSigner(t *testing.T) {
-	for b, want := range map[byte]string{0x00: "", 0x61: "PPL-Windows", 0x62: "PP-Windows", 0x41: "PPL-Authenticode", 0x31: "PPL-Antimalware", 0x71: "PPL-WinTcb", 0x91: "PPL-App", 0xf1: "PPL-Unknown"} {
+	// PS_PROTECTION: type in bits 0-2 (1 PPL, 2 PP), signer in bits 4-7 (1 Authenticode ... 4 Lsa, 5 Windows, 6 WinTcb, 7 WinSystem, 8 App)
+	for b, want := range map[byte]string{0x00: "", 0x11: "PPL-Authenticode", 0x31: "PPL-Antimalware", 0x41: "PPL-Lsa", 0x51: "PPL-Windows",
+		0x61: "PPL-WinTcb", 0x62: "PP-WinTcb", 0x71: "PPL-WinSystem", 0x81: "PPL-App", 0xf1: "PPL-Unknown"} {
 		if got := protectionName(b); got != want {
 			t.Errorf("protectionName(%#x) = %q, want %q", b, got, want)
 		}
