@@ -410,9 +410,13 @@ func selectPlatformSources(sources []collector.Source, input *bufio.Reader, outp
 	if forceCLISelection {
 		return selectSourcesCLI(sources, input, output)
 	}
+	released := releaseOwnConsole() // double-click from Explorer: no console window behind the selection window
 	selected, err := selectSourcesGUI(sources)
 	if !errors.Is(err, errGUIUnavailable) {
 		return selected, err
+	}
+	if released {
+		restoreConsole() // the window could not start: the user needs a console to read why
 	}
 	if info, statErr := os.Stdin.Stat(); statErr == nil && info.Mode()&os.ModeCharDevice != 0 {
 		fmt.Fprintln(os.Stderr, "GUI not available; opening terminal selection.")
