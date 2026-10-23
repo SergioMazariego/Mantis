@@ -397,3 +397,4 @@ if ($ReportPath) {
   $md | Set-Content -Path $ReportPath -Encoding utf8
 }
 if ($fail -gt 0) { exit 1 }
+exit 0  # never inherit the exit code of the last native command (the collector exits 1 when a source has gaps)

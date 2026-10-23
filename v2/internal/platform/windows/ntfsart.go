@@ -103,19 +103,69 @@ func rawNTFSSource(id string, m collector.Meta, vol fixedVolume, ntfsPath string
 					notes[k] = t.UTC().Format(time.RFC3339Nano)
 				}
 			}
-			var r io.Reader = f.NewReader()
+			r := &reopeningReader{ctx: ctx, f: f, end: f.Size(), notes: notes,
+				open: func() (*ntfs.File, error) { return v.OpenPath(ntfsPath) }}
 			if annotate != nil {
 				start, extra := annotate(f)
 				for k, v := range extra {
 					notes[k] = v
 				}
 				if start > 0 && start < f.Size() {
-					r = f.NewSectionReader(start, f.Size()-start)
+					r.pos = start
 				}
 			}
-			return &acqReader{r: &ctxReader{ctx, r}, method: "ntfs-raw-read", notes: notes}, nil
+			return &acqReader{r: r, method: "ntfs-raw-read", notes: notes}, nil
 		},
 	})
+}
+
+// reopeningReader reads [pos, end) of a live NTFS system file. $UsnJrnl:$J and $LogFile change while they are
+// read: the journal frees its oldest clusters and grows at the end, so the runlist read at open can stop covering
+// an offset ("not mapped by the runlist"). The file is then reopened from its MFT record (a fresh runlist) and the
+// read continues at the same offset; how often that happened is recorded in the notes.
+type reopeningReader struct {
+	ctx      context.Context
+	f        *ntfs.File
+	open     func() (*ntfs.File, error)
+	pos, end int64
+	reopens  int
+	notes    map[string]string
+}
+
+const maxNTFSReopens = 5
+
+func (r *reopeningReader) Read(p []byte) (int, error) {
+	for {
+		if err := r.ctx.Err(); err != nil {
+			return 0, err
+		}
+		if r.pos >= r.end {
+			return 0, io.EOF
+		}
+		if rest := r.end - r.pos; int64(len(p)) > rest {
+			p = p[:rest]
+		}
+		n, err := r.f.ReadAt(p, r.pos)
+		r.pos += int64(n)
+		switch {
+		case n > 0:
+			return n, nil // a following error is met again, and handled, by the next call
+		case err == nil:
+			continue
+		case errors.Is(err, io.EOF):
+			return 0, io.EOF
+		case errors.Is(err, ntfs.ErrCorrupt) && r.reopens < maxNTFSReopens:
+			nf, oerr := r.open()
+			if oerr != nil {
+				return 0, fmt.Errorf("%w (reopening after a moving runlist failed: %v)", err, oerr)
+			}
+			r.f = nf
+			r.reopens++
+			r.notes["reopened_during_read"] = fmt.Sprint(r.reopens)
+		default:
+			return 0, err
+		}
+	}
 }
 
 // firstAllocated returns the logical offset of the first allocated (non-sparse) byte of f.
