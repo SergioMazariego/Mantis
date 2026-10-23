@@ -60,8 +60,12 @@ var chromiumFiles = map[string]bool{
 	"history": true, "history-journal": true, "bookmarks": true, "bookmarks.bak": true, "preferences": true, "secure preferences": true,
 	"top sites": true, "top sites-journal": true, "shortcuts": true, "shortcuts-journal": true, "favicons": true, "favicons-journal": true,
 	"network action predictor": true, "network action predictor-journal": true, "media history": true, "media history-journal": true,
-	"current session": true, "current tabs": true, "last session": true, "last tabs": true, "visited links": true,
+	"visited links": true,
 }
+
+// chromiumSessionFiles hold page state, including typed form values and POST data: excluded for the same reason
+// as Firefox's sessionstore.
+var chromiumSessionFiles = map[string]bool{"current session": true, "current tabs": true, "last session": true, "last tabs": true}
 
 // ChromiumAllowed decides whether a path relative to a Chromium "User Data" directory
 // (Chrome, Edge) is collected.
@@ -83,10 +87,10 @@ func ChromiumAllowed(rel string) (bool, string) {
 		}
 	}
 	switch {
+	case (len(parts) == 2 && chromiumSessionFiles[name]) || (len(parts) >= 3 && parts[1] == "sessions"):
+		return false, "session store (page state with form data and POST bodies): not collected"
 	case len(parts) == 2 && chromiumFiles[name]:
 		return true, "history/bookmarks/configuration"
-	case len(parts) >= 3 && parts[1] == "sessions":
-		return true, "session metadata (URLs, tab state)"
 	case len(parts) == 5 && parts[1] == "extensions" && name == "manifest.json":
 		return true, "extension inventory (manifest)"
 	}

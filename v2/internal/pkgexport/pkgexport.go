@@ -17,7 +17,9 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/SergioMazariego/Mantis/v2/internal/collector"
 )
@@ -204,6 +206,7 @@ func Write(ctx context.Context, o Options) (*Summary, error) {
 		return sum, err
 	}
 	sum.VerifyErrors = verify(ctx, o.Dir, checks)
+	sum.VerifyErrors = append(sum.VerifyErrors, crossCheck(checks, artifacts, derived)...)
 	sum.Verified = len(sum.VerifyErrors) == 0
 	ver := map[string]any{"schema": "mantis.package-verification/1", "verified_utc": time.Now().UTC().Format(time.RFC3339Nano),
 		"files_checked": len(checks), "ok": sum.Verified, "errors": sum.VerifyErrors}
@@ -253,8 +256,15 @@ func SanitizeComponent(c string) string {
 	if out == "" || out == "." || out == ".." {
 		out = "_"
 	}
-	if len(out) > 150 {
-		out = out[:150]
+	if len(out) > 150 { // cut on a character boundary: a split UTF-8 sequence becomes U+FFFD on disk and two names collide
+		cut := 150
+		for cut > 0 && !utf8.RuneStart(out[cut]) {
+			cut--
+		}
+		out = strings.TrimRight(out[:cut], ". ")
+		if out == "" {
+			out = "_"
+		}
 	}
 	base := strings.ToUpper(out)
 	if i := strings.IndexByte(base, '.'); i >= 0 {
@@ -314,7 +324,15 @@ func copyVerified(ctx context.Context, o Options, dst, wantSHA string) (int64, s
 	if err := os.MkdirAll(longPath(filepath.Dir(dst)), 0o755); err != nil {
 		return 0, "", err
 	}
-	tmp := dst + ".partial"
+	// a destination must never be replaced: two artifacts mapping to one file would leave the manifest describing
+	// the first and the disk holding the second
+	if _, err := os.Lstat(longPath(dst)); err == nil {
+		return 0, "", fmt.Errorf("destination %s already exists in the package", dst)
+	}
+	tmp, err := stagingPath(o.Dir)
+	if err != nil {
+		return 0, "", err
+	}
 	out, err := os.OpenFile(longPath(tmp), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {
 		return 0, "", err
@@ -339,6 +357,18 @@ func copyVerified(ctx context.Context, o Options, dst, wantSHA string) (int64, s
 		return 0, "", err
 	}
 	return n, digest, nil
+}
+
+var stagingSeq atomic.Int64
+
+// stagingPath returns a fresh temporary file inside the package's own .mantis folder: staged files live outside
+// the evidence tree, so no name copied from the examined host can clash with them or hide from the checksums.
+func stagingPath(root string) (string, error) {
+	dir := filepath.Join(root, ".mantis", "staging")
+	if err := os.MkdirAll(longPath(dir), 0o755); err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, fmt.Sprintf("%d-%d.part", os.Getpid(), stagingSeq.Add(1))), nil
 }
 
 type ctxReader struct {
@@ -392,20 +422,17 @@ func listFiles(dir string) ([]string, error) {
 		if err != nil {
 			return err
 		}
+		rel, _ := filepath.Rel(dir, p)
+		rel = filepath.ToSlash(rel)
 		if d.IsDir() {
-			// the case store lives next to the package when the output directory is shared
-			if d.Name() == ".mantis" {
+			// only the package's own case store is excluded; a ".mantis" folder copied from the host is evidence
+			if rel == ".mantis" {
 				return filepath.SkipDir
 			}
 			return nil
 		}
-		rel, _ := filepath.Rel(dir, p)
-		rel = filepath.ToSlash(rel)
 		switch rel {
 		case "checksums.sha256", "verification.json":
-			return nil
-		}
-		if strings.HasSuffix(rel, ".partial") {
 			return nil
 		}
 		out = append(out, rel)
@@ -453,6 +480,42 @@ func verify(ctx context.Context, dir string, entries []checkEntry) []string {
 			if !known[rel] {
 				problems = append(problems, rel+": file appeared after checksums were written")
 			}
+		}
+	}
+	return problems
+}
+
+// crossCheck ties the manifest to the disk: every exported artifact and derived file must be in the checksums
+// with the digest the manifest records, and every checksummed file must be one the manifest accounts for.
+// Without it, a replaced file or a leftover from another run would still verify.
+func crossCheck(entries []checkEntry, arts []Artifact, derived []Derived) []string {
+	disk := make(map[string]string, len(entries))
+	for _, e := range entries {
+		disk[e.rel] = e.sha
+	}
+	known := map[string]bool{"manifest.json": true, "acquisition-report.json": true, "acquisition-errors.json": true, "README-PACKAGE.txt": true}
+	var problems []string
+	expect := func(rel, sha, what string) {
+		known[rel] = true
+		got, ok := disk[rel]
+		switch {
+		case !ok:
+			problems = append(problems, rel+": "+what+" in the manifest but missing from the package")
+		case !strings.EqualFold(got, sha):
+			problems = append(problems, rel+": "+what+" digest on disk differs from the manifest")
+		}
+	}
+	for _, a := range arts {
+		if a.Destination != "" {
+			expect(a.Destination, a.SHA256, "artifact "+a.ID)
+		}
+	}
+	for _, d := range derived {
+		expect(d.Path, d.SHA256, "derived file")
+	}
+	for _, e := range entries {
+		if !known[e.rel] {
+			problems = append(problems, e.rel+": file in the package that the manifest does not account for")
 		}
 	}
 	return problems

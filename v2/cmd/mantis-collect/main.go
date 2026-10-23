@@ -146,6 +146,7 @@ func run() int {
 	selectionContext.Elevated = elevated
 
 	var selected []collector.Source
+	var runNotes []string
 	profileName := string(collector.ProfileCustom)
 	switch {
 	case profile != "":
@@ -154,6 +155,17 @@ func run() int {
 		if len(selected) == 0 {
 			fmt.Fprintln(os.Stderr, collector.ErrNoSources)
 			return 1
+		}
+		if !*confirmSensitive { // say which sensitive sources of the profile were left out, so the package does not read as complete
+			var left []string
+			for _, s := range collector.SelectProfile(sources, profile, true) {
+				if s.Meta.Sensitive {
+					left = append(left, s.ID)
+				}
+			}
+			if len(left) > 0 {
+				runNotes = append(runNotes, fmt.Sprintf("sensitive sources of the %s profile were not collected (no --confirm-sensitive): %s", profile, strings.Join(left, ", ")))
+			}
 		}
 	case *collectAll:
 		profileName = "all"
@@ -175,7 +187,7 @@ func run() int {
 	}
 
 	cfg := runConfig{caseID: *caseIDValue, tenant: *tenantValue, actor: *actorValue, title: *caseTitle, profile: profileName,
-		outDir: outDir, dataDir: dataDir, budget: budget, force: *force, csv: *csvViews}
+		outDir: outDir, dataDir: dataDir, budget: budget, force: *force, csv: *csvViews, notes: runNotes}
 	guiCollect = func(ctx context.Context, chosen []collector.Source, onEvent func(collector.Event)) ([]collector.ItemResult, error) {
 		run := cfg
 		if profile == "" && !*collectAll && *artifactIDs == "" {
@@ -264,7 +276,8 @@ type runConfig struct {
 	outDir, dataDir                       string
 	budget                                int64
 	force                                 bool
-	csv                                   bool // derive csv/ views from the JSON snapshots
+	csv                                   bool     // derive csv/ views from the JSON snapshots
+	notes                                 []string // run-level notes decided before collection (e.g. sensitive sources left out)
 }
 
 // runCollection stores evidence in the case store, then exports and verifies the
@@ -274,6 +287,14 @@ func runCollection(ctx context.Context, cfg runConfig, sources []collector.Sourc
 	packageOutcome.Dir, packageOutcome.Summary, packageOutcome.Err = cfg.outDir, nil, nil
 	blobDir := filepath.Join(cfg.dataDir, "evidence")
 	tmpDir := filepath.Join(cfg.dataDir, "tmp")
+	// a package is written into an empty folder only: reusing one would mix (and overwrite) evidence of two runs
+	if entries, err := os.ReadDir(cfg.outDir); err == nil {
+		for _, e := range entries {
+			if e.Name() != ".mantis" {
+				return nil, usageError{fmt.Errorf("the output directory %s is not empty; choose a new folder for each package", cfg.outDir)}
+			}
+		}
+	}
 	for _, d := range []string{cfg.outDir, cfg.dataDir, tmpDir} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
 			return nil, err
@@ -283,7 +304,7 @@ func runCollection(ctx context.Context, cfg runConfig, sources []collector.Sourc
 	if err := checkHardLinks(cfg.dataDir); err != nil {
 		return nil, fmt.Errorf("the output directory %s cannot hold the evidence store (NTFS hard links are required): %w", cfg.outDir, err)
 	}
-	var notes []string
+	notes := append([]string(nil), cfg.notes...)
 	host, elevated := platformHost()
 	if host["emulated_process"] == "true" {
 		return nil, errors.New("this is a 32-bit process on 64-bit Windows: file system redirection would hide System32 artifacts; use the 64-bit build")
@@ -369,7 +390,7 @@ func runCollection(ctx context.Context, cfg runConfig, sources []collector.Sourc
 	sum, exportErr := pkgexport.Write(context.Background(), pkgexport.Options{
 		Dir: cfg.outDir, CaseID: cfg.caseID, TenantID: cfg.tenant, HostID: hostID, Host: host, ToolVersion: version,
 		Profile: cfg.profile, Privilege: privilege, StartedAt: started, FinishedAt: time.Now().UTC(), Items: results,
-		GlobalNotes: notes, SelectedOnly: cfg.profile != string(collector.ProfileFull), CSV: cfg.csv,
+		GlobalNotes: notes, SelectedOnly: cfg.profile != string(collector.ProfileFull) || len(cfg.notes) > 0, CSV: cfg.csv,
 		Open: func(c context.Context, sha string) (io.ReadCloser, error) {
 			return service.OpenVerified(c, scope, sha)
 		},
@@ -547,6 +568,12 @@ func reportResults(results []collector.ItemResult, err error, caseID string) int
 			failed = true
 		}
 		fmt.Printf("Evidence package: %s (%d files, %s) %s\n", packageOutcome.Dir, packageOutcome.Summary.Files, humanSize(packageOutcome.Summary.Bytes), state)
+		for _, v := range packageOutcome.Summary.VerifyErrors[:min(len(packageOutcome.Summary.VerifyErrors), 10)] {
+			fmt.Fprintln(os.Stderr, "  verification:", v)
+		}
+		if packageOutcome.Err != nil && len(packageOutcome.Summary.VerifyErrors) == 0 { // the package could not be written completely
+			fmt.Fprintln(os.Stderr, "evidence package:", packageOutcome.Err)
+		}
 	} else if packageOutcome.Err != nil {
 		fmt.Fprintln(os.Stderr, "evidence package:", packageOutcome.Err)
 		failed = true

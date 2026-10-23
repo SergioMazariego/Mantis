@@ -47,16 +47,20 @@ func processModuleImages(ctx context.Context, w *warnings) (any, error) {
 	loaded := map[string]*moduleImage{}
 	display := map[string]string{} // lower-case key -> path as normalized
 	unreadable := 0
+	var failures []string
 	for pid, name := range names {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		if pid == 0 {
+		if pid == 0 || isCredentialProcess(name) { // the module list of lsass/lsaiso is read from its memory: never
 			continue
 		}
 		mods, err := modulesOf(pid)
 		if err != nil {
 			unreadable++
+			if len(failures) < 10 {
+				failures = append(failures, fmt.Sprintf("%d:%s (%v)", pid, name, err))
+			}
 			continue
 		}
 		for _, m := range mods {
@@ -75,7 +79,7 @@ func processModuleImages(ctx context.Context, w *warnings) (any, error) {
 		}
 	}
 	if unreadable > 0 {
-		w.add("modules of %d process(es) could not be listed (protected processes); their modules are not described", unreadable)
+		w.add("modules of %d process(es) could not be listed; their modules are not described: %s", unreadable, strings.Join(failures, "; "))
 	}
 	keys := make([]string, 0, len(loaded))
 	for k := range loaded {
@@ -108,6 +112,6 @@ func processModuleImages(ctx context.Context, w *warnings) (any, error) {
 func processModuleImagesSource() collector.Source {
 	m := baseMeta("Loaded module images (hashes and signatures)", "Every distinct file loaded as a module by any process, with SHA-256 and other hashes, Authenticode verdict and signer, company, product, version, import hash and the processes that loaded it",
 		"processes", collector.PrivDebug, collector.InStdFull)
-	m.SideEffects = "reads the module files to hash them (updates last-access times on volumes where that is enabled)"
+	m.SideEffects = "lists the modules of other processes (lsass/lsaiso are skipped); reads the module files to hash them (can update last-access times); remote (UNC) modules are recorded, never opened"
 	return withDetect(jsonSource("processes-module-images", m, "toolhelp-modules+hash+wintrust", "api://process-module-images", processModuleImages), available)
 }

@@ -306,7 +306,7 @@ func adsInventory(ctx context.Context, w *warnings) map[string]any {
 	var out []entry
 	visited := 0
 	for _, up := range userProfiles() {
-		walkFiles(ctx, up.Path, walkSpec{MaxDepth: 10, SkipDir: func(rel string) bool {
+		incomplete := walkFiles(ctx, up.Path, walkSpec{MaxDepth: 10, SkipDir: func(rel string) bool {
 			l := strings.ToLower(rel)
 			return strings.HasPrefix(l, `appdata\local\packages`) || strings.HasPrefix(l, `appdata\local\microsoft\windows\inetcache`)
 		}}, func(path string, _ int64) bool {
@@ -340,6 +340,10 @@ func adsInventory(ctx context.Context, w *warnings) map[string]any {
 			}
 			return true
 		})
+		if incomplete != "" {
+			w.add("%s: %s", up.Path, incomplete)
+		}
 	}
-	return map[string]any{"files_visited": visited, "streams": out, "note": "Zone.Identifier contents are collected by ntfs-zone-identifier"}
+	return map[string]any{"files_visited": visited, "streams": out,
+		"note": "Zone.Identifier contents are collected by ntfs-zone-identifier. Not walked by design: AppData\\Local\\Packages and INetCache under each profile"}
 }

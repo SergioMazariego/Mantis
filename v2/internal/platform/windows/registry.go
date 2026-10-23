@@ -68,6 +68,7 @@ type regTarget struct {
 	NameOnly  []string               // when set, only these value names are recorded
 	NamesOnly bool                   // record value names, types and sizes but not their data
 	KeepData  []string               // with NamesOnly: values whose data is evidence and is kept (e.g. UserInitMprLogonScript)
+	NoRedact  bool                   // value names here are chosen by programs or attackers (Run, BAM): never redact by name
 	Include   func(path string) bool // when set, only keys whose path satisfies it are recorded (subkeys are still traversed)
 }
 
@@ -181,7 +182,7 @@ func dumpTargetCtx(ctx context.Context, t regTarget, w *warnings, out *[]regKeyD
 			if len(t.NameOnly) > 0 && !containsFold(t.NameOnly, n) {
 				continue
 			}
-			if (t.NamesOnly && !containsFold(t.KeepData, n)) || sensitiveValueName(n) {
+			if (t.NamesOnly && !containsFold(t.KeepData, n)) || (!t.NoRedact && sensitiveValueName(n)) {
 				size, vt, err := k.GetValue(n, nil)
 				if err != nil {
 					w.add("%s: value %q: %v", kd.Path, n, err)
@@ -484,6 +485,15 @@ func registrySources() []collector.Source {
 		"registry", collector.PrivAdmin, collector.InStdFull, "user-activity/wordwheelquery.md", "file-activity/trustrecords-registry-key.md", "network/terminal-server-client-keys.md", "execution/bam-dam.md")
 	out = append(out, requiresAdmin(userHiveGroup("hive-users", userMeta)))
 	return out
+}
+
+// noRedact marks targets whose value names are evidence chosen by programs or attackers (a Run value called
+// "WindowsTokenBroker" must keep its command): their data is never hidden by the name-based redaction.
+func noRedact(ts []regTarget) []regTarget {
+	for i := range ts {
+		ts[i].NoRedact = true
+	}
+	return ts
 }
 
 // isSecretHiveFile reports files that belong to the SAM or SECURITY hive (the hive, its logs, its RegBack copy).

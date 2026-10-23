@@ -7,6 +7,7 @@ import (
 	"encoding/csv"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -94,9 +95,14 @@ var csvTables = []csvTable{
 		Columns: cols("name", "type", "size", "text", "strings", "number", "redacted", "truncated")},
 }
 
-// writeCSVViews writes csv/<view>.csv for every view whose source artifacts were collected into dir.
+// maxCSVSourceBytes bounds the JSON a view decodes in memory; larger snapshots are left to a streaming viewer.
+const maxCSVSourceBytes = 256 << 20
+
+// writeCSVViews writes csv/<view>.csv for every view whose source artifacts were collected into dir. A view that
+// fails is reported and skipped; the others are still written.
 func writeCSVViews(ctx context.Context, dir string, arts []Artifact) ([]Derived, error) {
 	var out []Derived
+	var errs []error
 	for _, t := range csvTables {
 		if err := ctx.Err(); err != nil {
 			return out, err
@@ -116,24 +122,37 @@ func writeCSVViews(ctx context.Context, dir string, arts []Artifact) ([]Derived,
 		sort.Slice(src, func(i, j int) bool { return src[i].ID < src[j].ID })
 		d, err := writeCSVTable(ctx, dir, t, src)
 		if err != nil {
-			return out, fmt.Errorf("csv %s: %w", t.Name, err)
+			errs = append(errs, fmt.Errorf("csv %s: %w", t.Name, err))
+			continue
 		}
 		out = append(out, d)
 	}
-	return out, nil
+	return out, errors.Join(errs...)
 }
 
+// writeCSVTable writes one view to a staging file and moves it into csv/ only when complete, so a failed view
+// never leaves a partial file in the package.
 func writeCSVTable(ctx context.Context, dir string, t csvTable, src []Artifact) (Derived, error) {
 	rel := "csv/" + t.Name + ".csv"
 	path := filepath.Join(dir, filepath.FromSlash(rel))
 	if err := os.MkdirAll(longPath(filepath.Dir(path)), 0o755); err != nil {
 		return Derived{}, err
 	}
-	f, err := os.Create(longPath(path))
+	tmp, err := stagingPath(dir)
 	if err != nil {
 		return Derived{}, err
 	}
-	defer f.Close()
+	f, err := os.OpenFile(longPath(tmp), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return Derived{}, err
+	}
+	done := false
+	defer func() {
+		f.Close()
+		if !done {
+			os.Remove(longPath(tmp))
+		}
+	}()
 	h := sha256.New()
 	counter := &countingWriter{w: io.MultiWriter(f, h)}
 	if _, err := counter.Write([]byte("\xEF\xBB\xBF")); err != nil { // UTF-8 BOM so spreadsheet tools keep the accents
@@ -156,12 +175,20 @@ func writeCSVTable(ctx context.Context, dir string, t csvTable, src []Artifact) 
 		if err := ctx.Err(); err != nil {
 			return Derived{}, err
 		}
+		if a.SizeBytes > maxCSVSourceBytes {
+			return Derived{}, fmt.Errorf("%s: %d bytes is above the %d MiB a CSV view decodes in memory", a.ID, a.SizeBytes, maxCSVSourceBytes>>20)
+		}
 		doc, err := readJSONDoc(filepath.Join(dir, filepath.FromSlash(a.Destination)))
 		if err != nil {
 			return Derived{}, fmt.Errorf("%s: %w", a.ID, err)
 		}
 		d.FromArtifacts = append(d.FromArtifacts, a.ID)
-		rows, _ := lookupPath(doc, t.Rows).([]any)
+		rv := lookupPath(doc, t.Rows)
+		rows, isList := rv.([]any)
+		if !isList && rv != nil {
+			// a changed structure must fail loudly: an empty table would read as "nothing was found"
+			return Derived{}, fmt.Errorf("%s: %s is not a list (data_version %d)", a.ID, t.Rows, a.DataVersion)
+		}
 		for i, row := range rows {
 			if t.Explode == "" {
 				rec := []string{a.ID, a.SHA256, fmt.Sprintf("%s[%d]", t.Rows, i)}
@@ -195,7 +222,17 @@ func writeCSVTable(ctx context.Context, dir string, t csvTable, src []Artifact) 
 		return Derived{}, err
 	}
 	d.SizeBytes, d.SHA256 = counter.n, hex.EncodeToString(h.Sum(nil))
-	return d, f.Close()
+	if err := f.Close(); err != nil {
+		return Derived{}, err
+	}
+	if _, err := os.Lstat(longPath(path)); err == nil {
+		return Derived{}, fmt.Errorf("%s already exists in the package", rel)
+	}
+	if err := os.Rename(longPath(tmp), longPath(path)); err != nil {
+		return Derived{}, err
+	}
+	done = true
+	return d, nil
 }
 
 type countingWriter struct {

@@ -16,7 +16,7 @@ func usbSources() []collector.Source {
 		return baseMeta(name, desc, "usb", priv, p)
 	}
 	return []collector.Source{
-		regSnapshotSource("usb-device-history", um("USB and removable storage registry history", "USBSTOR/USB enumeration (device ids, serials, friendly names and Properties keys with device timestamps), MountedDevices, Windows Portable Devices, EMDMgmt, DeviceContainers",
+		regSnapshotSource("usb-device-history", um("USB and removable storage registry history", "USBSTOR/USB enumeration (device ids, serials, friendly names; the Properties subkeys with first/last connection times are usually readable by SYSTEM only, so the SYSTEM hive copy is their reliable source), MountedDevices, Windows Portable Devices, EMDMgmt, DeviceContainers",
 			collector.InStdFull, collector.PrivUser), `HKLM\SYSTEM\CurrentControlSet\Enum\USBSTOR | USB | MountedDevices | ...`, func() []regTarget {
 			return []regTarget{hklm(`SYSTEM\CurrentControlSet\Enum\USBSTOR`, true, 0), hklm(`SYSTEM\CurrentControlSet\Enum\USB`, true, 0),
 				hklm(`SYSTEM\CurrentControlSet\Enum\SCSI`, true, 3), hklm(`SYSTEM\CurrentControlSet\Enum\WpdBusEnumRoot`, true, 0),

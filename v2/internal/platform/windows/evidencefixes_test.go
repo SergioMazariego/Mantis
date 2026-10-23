@@ -3,6 +3,7 @@
 package windows
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/SergioMazariego/Mantis/v2/internal/collector"
@@ -57,6 +58,40 @@ func TestJSONSourcesDeclareTheirDataVersion(t *testing.T) {
 	}
 	if other := jsonSource("system-os", collector.Meta{Category: "system"}, "m", "api://x", nil); other.Meta.DataVersion != 1 {
 		t.Errorf("unlisted sources are version 1, got %d", other.Meta.DataVersion)
+	}
+}
+
+func TestRemotePathsAreNeverOpened(t *testing.T) {
+	for p, want := range map[string]bool{
+		`\\attacker\share\x.exe`: true, `"\\attacker@SSL\DavWWWRoot\x.dll"`: true, `\\?\UNC\host\s\x.exe`: true, `//host/s/x`: true,
+		`\Device\Mup\host\s\x.exe`: true, `C:\Windows\System32\cmd.exe`: false, `\\?\C:\Windows\notepad.exe`: false,
+	} {
+		if got := isRemotePath(p); got != want {
+			t.Errorf("isRemotePath(%q) = %v, want %v", p, got, want)
+		}
+	}
+	enr := &imageEnricher{seen: map[string]*enrichedImage{}}
+	if img := enr.describe(t.Context(), `\\mantis-fixture.invalid\s\x.exe`); img.Exists || img.Error == "" {
+		t.Errorf("a UNC image must be recorded as not read: %+v", img)
+	}
+}
+
+func TestSystemDirJoinKeepsAbsoluteAndSkipsEmpty(t *testing.T) {
+	win := `C:\Windows`
+	for in, want := range map[string]string{"ssp.dll": `C:\Windows\System32\ssp.dll`, `C:\x\ssp.dll`: `C:\x\ssp.dll`, `""`: "", "  ": "", `%windir%\x.dll`: `%windir%\x.dll`} {
+		if got := inSystemDir(win, "System32", in); got != want {
+			t.Errorf("inSystemDir(%q) = %q, want %q", in, got, want)
+		}
+	}
+	if accountExpiry(0xFFFFFFFF) != "never" || accountExpiry(0) != "" {
+		t.Error("TIMEQ_FOREVER must read as never, 0 as unset")
+	}
+}
+
+func TestMachineEntriesDoNotResolveUserVariablesIntoTheCollectorsProfile(t *testing.T) {
+	got := expandForEntry(`%APPDATA%\upd.exe /x %SystemRoot%\y`, "System-wide")
+	if !strings.HasPrefix(got, `%APPDATA%\upd.exe`) || strings.Contains(got, "%SystemRoot%") {
+		t.Errorf("machine entry: user variable must stay unresolved, machine variable resolved: %q", got)
 	}
 }
 

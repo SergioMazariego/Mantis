@@ -22,6 +22,7 @@ if ($Remove) {
   net user "${marker}User" /delete 2>$null | Out-Null
   Remove-ItemProperty 'HKCU:\Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Compatibility Assistant\Store' -Name "C:\$marker\tokenizer.exe" -ErrorAction SilentlyContinue
   Remove-ItemProperty 'HKCU:\Environment' -Name 'UserInitMprLogonScript' -ErrorAction SilentlyContinue
+  Remove-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name "${marker}Unc" -ErrorAction SilentlyContinue
   Remove-ItemProperty 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Run' -Name "${marker}32" -ErrorAction SilentlyContinue
   Remove-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder' -Name "$marker.cmd" -ErrorAction SilentlyContinue
   $hosts = "$env:SystemRoot\System32\drivers\etc\hosts"
@@ -95,6 +96,8 @@ Start-Sleep -Seconds 2
 $store = 'HKCU:\Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Compatibility Assistant\Store'
 New-Item $store -Force | Out-Null
 New-ItemProperty $store -Name "C:\$marker\tokenizer.exe" -PropertyType Binary -Value ([byte[]](0x53, 0x41, 0x43, 0x50, 1, 0, 0, 0)) -Force | Out-Null
+#  - an autostart pointing at a UNC path: it must be recorded and never opened (no SMB/NTLM to that host)
+Set-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name "${marker}Unc" -Value "\\mantis-fixture.invalid\share\${marker}.exe"
 #  - a logon script stored among the user's environment variables
 Set-ItemProperty 'HKCU:\Environment' -Name 'UserInitMprLogonScript' -Value "C:\Windows\System32\notepad.exe /${marker}LogonScript"
 #  - a 32-bit Run entry (WOW6432Node view)

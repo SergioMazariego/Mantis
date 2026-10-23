@@ -619,6 +619,8 @@ var (
 )
 
 func loadedDrivers(w *warnings) map[string]any {
+	// recent builds return kernel addresses only to a caller with SeDebugPrivilege enabled
+	enablePrivilege("SeDebugPrivilege")
 	var needed uint32
 	pEnumDeviceDrivers.Call(0, 0, uintptr(unsafe.Pointer(&needed)))
 	if needed == 0 {
@@ -635,10 +637,20 @@ func loadedDrivers(w *warnings) map[string]any {
 		n = len(bases)
 	}
 	var out []map[string]any
+	zeroBase, noPath := 0, 0
 	for _, b := range bases[:n] {
 		name := make([]uint16, 520)
 		l, _, _ := pGetDeviceDriverFile.Call(b, uintptr(unsafe.Pointer(&name[0])), uintptr(len(name)))
+		if b == 0 {
+			zeroBase++
+		}
+		if l == 0 {
+			noPath++
+		}
 		out = append(out, map[string]any{"image_base": fmt.Sprintf("0x%x", b), "path": windows.UTF16ToString(name[:l])})
+	}
+	if zeroBase > 0 || noPath > 0 { // the list is then incomplete as evidence: say so instead of returning blanks silently
+		w.add("%d driver(s) without a kernel address and %d without a path: this build hides them from a caller without SeDebugPrivilege", zeroBase, noPath)
 	}
 	return map[string]any{"drivers": out, "count": len(out), "note": "image bases are kernel addresses at collection time"}
 }

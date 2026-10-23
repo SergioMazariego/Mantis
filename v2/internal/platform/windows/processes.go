@@ -5,6 +5,7 @@ package windows
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"sort"
 	"time"
@@ -157,7 +158,16 @@ func integrityName(tok windows.Token) string {
 }
 
 func modulesOf(pid uint32) ([]moduleInfo, error) {
-	snap, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPMODULE|windows.TH32CS_SNAPMODULE32, pid)
+	var snap windows.Handle
+	var err error
+	// ERROR_BAD_LENGTH means the process was loading or unloading a DLL at that moment: documented to retry
+	for attempt := 0; attempt < 5; attempt++ {
+		snap, err = windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPMODULE|windows.TH32CS_SNAPMODULE32, pid)
+		if !errors.Is(err, windows.ERROR_BAD_LENGTH) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -268,6 +278,16 @@ func processSnapshotDetailed(ctx context.Context, w *warnings, withModules, with
 	for err := windows.Process32First(snap, &pe); err == nil; err = windows.Process32Next(snap, &pe) {
 		procs = append(procs, procRecord{PID: pe.ProcessID, ParentPID: pe.ParentProcessID, Name: windows.UTF16ToString(pe.ExeFile[:]), Threads: pe.Threads})
 	}
+	// Creation time of every process at the moment of the list. The walk below takes seconds or minutes and
+	// Windows reuses PIDs at once: a handle opened later must belong to the same process, or its details would be
+	// attributed to the wrong one. It also gives a creation time to processes that cannot be opened.
+	created := map[uint32]string{}
+	if buf, ret, _, err := querySystemProcesses(ctx, systemProcessInformation); err == nil {
+		list, _ := parseProcessInformation(buf[:ret], uintptr(unsafe.Pointer(&buf[0])), false, false)
+		for _, sp := range list {
+			created[uint32(sp.PID)] = sp.CreatedUTC
+		}
+	}
 	sockets := socketTables(w)
 	byPID := map[uint32][]socketRecord{}
 	for _, s := range sockets {
@@ -282,9 +302,11 @@ func processSnapshotDetailed(ctx context.Context, w *warnings, withModules, with
 		p := &procs[i]
 		p.Sockets = byPID[p.PID]
 		p.CollectedUTC = time.Now().UTC().Format(time.RFC3339Nano)
+		p.CreatedUTC = created[p.PID]
 		if p.PID == 0 {
 			continue
 		}
+		credential := isCredentialProcess(p.Name)
 		var sid uint32
 		if err := windows.ProcessIdToSessionId(p.PID, &sid); err == nil {
 			p.SessionID = &sid
@@ -293,21 +315,27 @@ func processSnapshotDetailed(ctx context.Context, w *warnings, withModules, with
 		if err != nil {
 			p.Inaccessible = append(p.Inaccessible, "OpenProcess: "+err.Error())
 			denied++
-			if withModules {
+			if withModules && !credential {
 				if mods, merr := modulesOf(p.PID); merr == nil {
 					p.Modules = mods
 				}
 			}
 			continue
 		}
+		var c, e, k, u windows.Filetime
+		if err := windows.GetProcessTimes(h, &c, &e, &k, &u); err == nil {
+			if now := filetimeToUTC(c); p.CreatedUTC != "" && now != p.CreatedUTC {
+				windows.CloseHandle(h)
+				p.Inaccessible = append(p.Inaccessible, fmt.Sprintf("PID reused during collection: the process listed exited and PID %d now belongs to a process started at %s; its details were not read", p.PID, now))
+				continue
+			} else {
+				p.CreatedUTC = now
+			}
+		}
 		var buf [32768]uint16
 		n := uint32(len(buf))
 		if err := windows.QueryFullProcessImageName(h, 0, &buf[0], &n); err == nil {
 			p.ImagePath = windows.UTF16ToString(buf[:n])
-		}
-		var c, e, k, u windows.Filetime
-		if err := windows.GetProcessTimes(h, &c, &e, &k, &u); err == nil {
-			p.CreatedUTC = filetimeToUTC(c)
 		}
 		if cl, err := commandLine(h); err == nil {
 			p.CommandLine = cl
@@ -353,11 +381,14 @@ func processSnapshotDetailed(ctx context.Context, w *warnings, withModules, with
 		p.Protection = processProtection(h)
 		p.Architecture, _ = processArchitecture(h)
 		windows.CloseHandle(h)
-		if ph, err := windows.OpenProcess(windows.PROCESS_QUERY_INFORMATION|windows.PROCESS_VM_READ, false, p.PID); err == nil {
+		if credential {
+			// lsass/lsaiso hold credentials: reading their memory (PEB, module list) is what credential theft does and
+			// what endpoint protection blocks; their memory is never read by this source
+			p.Inaccessible = append(p.Inaccessible, "PEB and modules not read: credential process (memory of lsass/lsaiso is never read)")
+		} else if ph, err := windows.OpenProcess(windows.PROCESS_QUERY_INFORMATION|windows.PROCESS_VM_READ, false, p.PID); err == nil {
 			if info, perr := readPEB(ph); perr == nil {
 				p.CurrentDirectory, p.PEBImagePath, p.WindowTitle = info.CurrentDirectory, info.ImagePath, info.WindowTitle
-				if info.ImagePath != "" && p.ImagePath != "" {
-					same := samePath(info.ImagePath, p.ImagePath)
+				if same, ok := samePath(info.ImagePath, p.ImagePath); ok {
 					p.PEBImageMatches = &same
 				}
 			} else {
@@ -367,7 +398,7 @@ func processSnapshotDetailed(ctx context.Context, w *warnings, withModules, with
 		} else {
 			p.Inaccessible = append(p.Inaccessible, "PEB: OpenProcess(read): "+err.Error())
 		}
-		if withModules {
+		if withModules && !credential {
 			if mods, err := modulesOf(p.PID); err == nil {
 				p.Modules = mods
 			} else {
@@ -440,7 +471,7 @@ func processSources() []collector.Source {
 		collector.InAll, collector.PrivDebug, "execution/evtx-4688-process-created.md"), "toolhelp+ntquery+wintrust", "api://processes", func(ctx context.Context, w *warnings) (any, error) {
 		return processSnapshotDetailed(ctx, w, true, true)
 	}), available)
-	list.Meta.SideEffects = "reads executable files to hash them (updates last-access times on volumes where that is enabled)"
+	list.Meta.SideEffects = "enables SeDebugPrivilege when the token holds it (audited as event 4703 where that policy is on); opens other processes with read access to read their PEB and module list (lsass/lsaiso are never read); reads executable files to hash them (can update last-access times); remote (UNC) images are recorded, never opened"
 	handles := withDetect(jsonSource("processes-handle-table", m("Handle table (counts per process/type)", "System handle table aggregated per process and object type, with the build's object type table", collector.InFullOnly, collector.PrivDebug),
 		"ntquerysysteminformation", "api://handle-table", handleTable), available)
 	return []collector.Source{list, handles, procPerfSource(), processHandlesSource(), processMemoryMapSource(), processModuleImagesSource(), processEnvironmentSource()}

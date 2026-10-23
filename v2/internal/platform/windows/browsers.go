@@ -30,7 +30,7 @@ func readDirNames(dir string) ([]string, error) {
 func browserSources() []collector.Source {
 	bm := func(name, desc string, p collector.ProfileMask, art ...string) collector.Meta {
 		m := baseMeta(name, desc, "browsers", collector.PrivUser, p, art...)
-		m.SideEffects = "none; credential, cookie and token stores are excluded by policy"
+		m.SideEffects = readSideEffect + "; credential, cookie, token and session stores are excluded by policy"
 		return m
 	}
 	chromium := func(id, name, sub string) collector.Source {

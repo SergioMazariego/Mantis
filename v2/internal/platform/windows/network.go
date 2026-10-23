@@ -340,16 +340,22 @@ func interfaceConfig(w *warnings) map[string]any {
 	size := uint32(32 << 10)
 	var buf []byte
 	const flags = 0x80 | 0x10 // GAA_FLAG_INCLUDE_GATEWAYS | GAA_FLAG_INCLUDE_PREFIX
+	filled := false
 	for i := 0; i < 8; i++ {
 		buf = make([]byte, size)
 		err := windows.GetAdaptersAddresses(syscall.AF_UNSPEC, flags, 0, (*windows.IpAdapterAddresses)(unsafe.Pointer(&buf[0])), &size)
 		if err == nil {
+			filled = true
 			break
 		}
 		if err != windows.ERROR_BUFFER_OVERFLOW {
 			w.add("GetAdaptersAddresses: %v", err)
 			return map[string]any{"adapters": out}
 		}
+	}
+	if !filled { // never parse a buffer the API did not fill: it would invent an empty adapter
+		w.add("GetAdaptersAddresses: the adapter list kept growing; no adapters recorded")
+		return map[string]any{"adapters": out}
 	}
 	for a := (*windows.IpAdapterAddresses)(unsafe.Pointer(&buf[0])); a != nil; a = a.Next {
 		ad := adapter{Name: windows.UTF16PtrToString(a.FriendlyName), Description: windows.UTF16PtrToString(a.Description), Index: a.IfIndex,

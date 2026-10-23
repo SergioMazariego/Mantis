@@ -109,6 +109,7 @@ func mappedFileName(h windows.Handle, addr uintptr) string {
 func walkMemory(h windows.Handle) memProcess {
 	var mp memProcess
 	files := map[uintptr]string{}
+	probed := map[uintptr]bool{} // allocation bases already checked for an MZ header
 	probes := 0
 	var addr uintptr
 	for {
@@ -141,15 +142,6 @@ func walkMemory(h windows.Handle) memProcess {
 		switch mbi.Type {
 		case memPrivate:
 			reg.Unbacked = true
-			mp.UnbackedExecutable++
-			if probes < maxMZProbesPerProcess {
-				probes++
-				var sig [2]byte
-				var read uintptr
-				if err := windows.ReadProcessMemory(h, mbi.BaseAddress, &sig[0], 2, &read); err == nil && read == 2 && sig[0] == 'M' && sig[1] == 'Z' {
-					reg.MZ = true
-				}
-			}
 		case memImage, memMapped:
 			f, ok := files[mbi.AllocationBase]
 			if !ok {
@@ -157,6 +149,22 @@ func walkMemory(h windows.Handle) memProcess {
 				files[mbi.AllocationBase] = f
 			}
 			reg.File = f
+			// a mapped section with no file behind it (pagefile-backed: NtCreateSection + NtMapViewOfSection) is
+			// as unbacked as private memory
+			reg.Unbacked = f == ""
+		}
+		if reg.Unbacked {
+			mp.UnbackedExecutable++
+			// a reflectively loaded PE keeps its header at the start of the allocation (code begins a page later)
+			if !probed[mbi.AllocationBase] && probes < maxMZProbesPerProcess {
+				probed[mbi.AllocationBase] = true
+				probes++
+				var sig [2]byte
+				var read uintptr
+				if err := windows.ReadProcessMemory(h, mbi.AllocationBase, &sig[0], 2, &read); err == nil && read == 2 && sig[0] == 'M' && sig[1] == 'Z' {
+					reg.MZ = true
+				}
+			}
 		}
 		if len(mp.Executable) < maxExecRegionsPerProcess {
 			mp.Executable = append(mp.Executable, reg)
@@ -184,6 +192,10 @@ func processMemoryMap(ctx context.Context, w *warnings) (any, error) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
+		if isCredentialProcess(names[pid]) {
+			out = append(out, memProcess{PID: pid, Name: names[pid], Unavailable: "not read: credential process (memory of lsass/lsaiso is never read)"})
+			continue
+		}
 		h, err := windows.OpenProcess(windows.PROCESS_QUERY_INFORMATION|windows.PROCESS_VM_READ, false, pid)
 		if err != nil {
 			denied++
@@ -202,7 +214,7 @@ func processMemoryMap(ctx context.Context, w *warnings) (any, error) {
 		w.add("%d process(es) could not be opened for memory queries (protected processes or insufficient privilege); no protection was bypassed", denied)
 	}
 	return map[string]any{
-		"note": "Executable regions per process: base, size, type (image, mapped, private), protection, backing file, RWX and unbacked-executable flags, and whether a private executable region starts with MZ. " +
+		"note": "Executable regions per process: base, size, type (image, mapped, private), protection, backing file, RWX and unbacked-executable flags (private, or mapped with no file), and whether the allocation of an unbacked region starts with MZ. " +
 			"JIT engines (browsers, .NET, Java, Node.js) legitimately create private executable memory: read the flags together with the process",
 		"process_count": len(out), "with_private_or_rwx_executable": len(flagged),
 		"flagged": strings.Join(flagged, " "), "processes": out}, nil
@@ -211,6 +223,6 @@ func processMemoryMap(ctx context.Context, w *warnings) (any, error) {
 func processMemoryMapSource() collector.Source {
 	m := baseMeta("Process memory map (executable regions)", "Executable memory regions of every readable process: protection, backing file, RWX and unbacked-executable flags (no memory contents are stored)",
 		"processes", collector.PrivDebug, collector.InStdFull)
-	m.SideEffects = "queries the address space of other processes (VirtualQueryEx) and reads 2 bytes at the start of private executable regions"
+	m.SideEffects = "queries the address space of other processes (VirtualQueryEx) and reads 2 bytes at the start of each unbacked executable allocation; lsass/lsaiso are never opened"
 	return withDetect(jsonSource("processes-memory-map", m, "virtualqueryex", "api://process-memory-map", processMemoryMap), available)
 }

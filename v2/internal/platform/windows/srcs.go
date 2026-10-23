@@ -27,9 +27,15 @@ const (
 	smallFileMax   int64 = 256 << 20 // logs, lnk, xml, small databases
 )
 
+// readSideEffect is declared by every source that copies file content: reading through the file system can update
+// a file's last-access time on volumes where Windows maintains it (the original times are recorded beforehand).
+const readSideEffect = "reads file content: on volumes where Windows maintains last-access times, reading can update them (the original created/accessed/modified times are recorded in the notes before the read)"
+
+// short is the per-item suffix of an expanded source ID. 64 bits keep collisions negligible for groups of tens of
+// thousands of files (32 bits gave a few percent at 20 000); the runner also keeps any remaining duplicate apart.
 func short(s string) string {
 	sum := sha256.Sum256([]byte(strings.ToLower(s)))
-	return hex.EncodeToString(sum[:4])
+	return hex.EncodeToString(sum[:8])
 }
 
 func baseMeta(name, desc, category string, priv collector.Privilege, profiles collector.ProfileMask, artifacts ...string) collector.Meta {
@@ -47,6 +53,9 @@ func fileSource(id string, m collector.Meta, path string, max int64) collector.S
 	m.SourceType, m.SourcePath = "file", path
 	if m.DestPath == "" {
 		m.DestPath = destFor(m.Category, path)
+	}
+	if m.SideEffects == "" {
+		m.SideEffects = readSideEffect
 	}
 	return collector.Source{
 		ID: id, Kind: "windows.file", Locator: path, Method: "file-copy/direct-or-raw", MaxBytes: max, Meta: m,
@@ -107,6 +116,9 @@ func walkGroup(id string, m collector.Meta, locator string, spec walkSpec) colle
 	if m.SourcePath == "" {
 		m.SourcePath = locator
 	}
+	if m.SideEffects == "" {
+		m.SideEffects = readSideEffect
+	}
 	return collector.Source{
 		ID: id, Kind: "windows.file_group", Locator: locator, Method: "directory-walk+file-copy/direct-or-raw", MaxBytes: spec.FileMax, Meta: m,
 		Detect: func(context.Context) collector.Availability {
@@ -142,6 +154,7 @@ func walkGroup(id string, m collector.Meta, locator string, spec walkSpec) colle
 					}
 					cm := collector.Meta{Name: filepath.Base(path), Category: m.Category}
 					child := fileSource(id+"-"+short(path), cm, path, spec.FileMax)
+					child.Meta.SideEffects = "" // inherited from the group, whose text may carry more (e.g. why it is sensitive)
 					out = append(out, child)
 					return true
 				})
@@ -223,14 +236,11 @@ func walkFilesStatus(ctx context.Context, root string, spec walkSpec, fn func(pa
 					note("depth limit reached at %s", path)
 					continue
 				}
-				if e.Type()&os.ModeSymlink != 0 {
-					continue
-				}
-				if reparse, err := reparseState(path); err != nil {
+				if link, err := isLinkReparse(path); err != nil {
 					noteErr(err, "cannot inspect %s: %v", path, err)
 					continue
-				} else if reparse {
-					continue // junctions and mount points are never followed
+				} else if link {
+					continue // symbolic links, junctions and mount points are never followed
 				}
 				if spec.SkipDir != nil && spec.SkipDir(rel) {
 					continue
@@ -241,7 +251,11 @@ func walkFilesStatus(ctx context.Context, root string, spec walkSpec, fn func(pa
 				continue
 			}
 			if !e.Type().IsRegular() {
-				continue
+				// other reparse points (OneDrive files, WOF-compressed system files) are real files with content:
+				// only links are left out; a cloud placeholder is then refused, and recorded, when it is opened
+				if link, err := isLinkReparse(path); err != nil || link {
+					continue
+				}
 			}
 			if spec.Match != nil && !spec.Match(rel, e.Name()) {
 				continue
@@ -262,6 +276,31 @@ func walkFilesStatus(ctx context.Context, root string, spec walkSpec, fn func(pa
 	}
 	walk(root, 0)
 	return strings.Join(problems, "; "), deniedOnly && len(problems) > 0
+}
+
+const (
+	ioReparseTagMountPoint = 0xA0000003
+	ioReparseTagSymlink    = 0xA000000C
+)
+
+// isLinkReparse reports whether path is a symbolic link, junction or mount point: a reparse point that points
+// elsewhere and must not be followed. Other reparse tags (cloud files, WOF, dedup) are ordinary content.
+func isLinkReparse(path string) (bool, error) {
+	reparse, err := reparseState(path)
+	if err != nil || !reparse {
+		return false, err
+	}
+	p, err := windows.UTF16PtrFromString(extended(path))
+	if err != nil {
+		return false, err
+	}
+	var fd windows.Win32finddata
+	h, err := windows.FindFirstFile(p, &fd)
+	if err != nil {
+		return true, nil // a reparse point whose tag cannot be read is treated as a link: never followed
+	}
+	windows.FindClose(h)
+	return fd.Reserved0 == ioReparseTagMountPoint || fd.Reserved0 == ioReparseTagSymlink, nil
 }
 
 // reparseState reports whether path is a reparse point; an error means it could not be inspected.
@@ -438,11 +477,20 @@ func perUserFileGroup(id string, m collector.Meta, rels []string) collector.Sour
 
 // warnings collects non-fatal problems while a structured snapshot is built, so a
 // partial acquisition is visible instead of hidden behind a success status.
-type warnings struct{ items []string }
+type warnings struct {
+	items   []string
+	dropped int
+}
+
+const maxWarnings = 200
 
 func (w *warnings) add(format string, args ...any) {
-	if len(w.items) < 200 {
+	switch {
+	case len(w.items) < maxWarnings-1:
 		w.items = append(w.items, fmt.Sprintf(format, args...))
+	default: // the last slot states how many more there were, so the count is never silently lost
+		w.dropped++
+		w.items = append(w.items[:maxWarnings-1], fmt.Sprintf("%d further warning(s) omitted", w.dropped))
 	}
 }
 
@@ -563,6 +611,11 @@ func requiresAdmin(s collector.Source) collector.Source {
 func sensitiveFullOnly(s collector.Source, why string) collector.Source {
 	s.Meta.Sensitive = true
 	s.Meta.Profiles = collector.InFullOnly
-	s.Meta.SideEffects = why
+	// keep what the source does to the host and add why it needs approval
+	if s.Meta.SideEffects == "" {
+		s.Meta.SideEffects = "sensitive: " + why
+	} else {
+		s.Meta.SideEffects += "; sensitive: " + why
+	}
 	return s
 }

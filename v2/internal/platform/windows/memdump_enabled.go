@@ -35,7 +35,8 @@ func dumpProcess(ctx context.Context, pid uint32) (io.ReadCloser, error) {
 		return nil, fmt.Errorf("%w: lsass.exe is excluded; dumping it extracts credentials", collector.ErrNotSupported)
 	}
 	enablePrivilege("SeDebugPrivilege")
-	h, err := windows.OpenProcess(windows.PROCESS_QUERY_INFORMATION|windows.PROCESS_VM_READ, false, pid)
+	// MiniDumpWithHandleData needs PROCESS_DUP_HANDLE as well (documented for MiniDumpWriteDump)
+	h, err := windows.OpenProcess(windows.PROCESS_QUERY_INFORMATION|windows.PROCESS_VM_READ|windows.PROCESS_DUP_HANDLE, false, pid)
 	if err != nil {
 		return nil, classifyErr(fmt.Errorf("OpenProcess(%d): %w", pid, err))
 	}

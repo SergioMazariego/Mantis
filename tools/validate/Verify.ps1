@@ -270,9 +270,10 @@ Check 'V-FIX: execution values whose name is a path keep their data (never redac
   $true
 }
 Check 'V-FIX: the DNS cache records cached answers (address) without querying the network' {
-  $e = (Text 'network\network-dns-cache.json' | ConvertFrom-Json).data.entries | Where-Object { $_.name -eq 'mantis-fixture.test' } | Select-Object -First 1
-  if (-not $e) { throw 'the fixture name is not in the DNS cache dump' }
-  if (-not ($e.records | Where-Object { $_.address -eq '127.0.0.42' })) { throw "no cached answer 127.0.0.42: $($e | ConvertTo-Json -Compress -Depth 4)" }
+  # the cache lists a name once per record type (A, AAAA...): the answer can be on any of them
+  $e = @((Text 'network\network-dns-cache.json' | ConvertFrom-Json).data.entries | Where-Object { $_.name -eq 'mantis-fixture.test' })
+  if ($e.Count -eq 0) { throw 'the fixture name is not in the DNS cache dump' }
+  if (-not ($e | ForEach-Object { $_.records } | Where-Object { $_.address -eq '127.0.0.42' })) { throw "no cached answer 127.0.0.42: $($e | ConvertTo-Json -Compress -Depth 4)" }
   $true
 }
 Check 'V-FIX: persistence keeps the logon script, the 32-bit Run view and the Startup folder state' {
@@ -286,6 +287,18 @@ Check 'V-FIX: persistence keeps the logon script, the 32-bit Run view and the St
   $dump = (Text 'persistence\persistence-autorun-registry.json' | ConvertFrom-Json).data.keys | Where-Object { $_.path -like '*\Environment' }
   $val = @($dump | ForEach-Object { $_.values } | Where-Object { $_.name -eq 'UserInitMprLogonScript' }) | Select-Object -First 1
   if (-not $val -or -not $val.text) { throw 'the Environment dump hides the logon script command' }
+  $true
+}
+Check 'V-AUDIT: a UNC autostart is recorded but never opened; lsass memory is never read' {
+  $d = (Text 'persistence\persistence-enriched.json' | ConvertFrom-Json).data
+  $unc = $d.entries | Where-Object { $_.entry -eq 'MantisFixtureUnc' } | Select-Object -First 1
+  if (-not $unc) { throw 'the UNC Run fixture was not listed' }
+  $img = $d.images | Where-Object { $_.path -like '\\mantis-fixture.invalid*' } | Select-Object -First 1
+  if (-not $img -or $img.exists -or $img.error -notmatch 'remote image not read') { throw "UNC image handling: $($img | ConvertTo-Json -Compress)" }
+  $lsass = (Text 'processes\processes-detailed.json' | ConvertFrom-Json).data.processes | Where-Object { $_.name -eq 'lsass.exe' } | Select-Object -First 1
+  if ($lsass -and ($lsass.peb_image_path -or $lsass.modules)) { throw 'the PEB or module list of lsass was read' }
+  $mm = (Text 'processes\processes-memory-map.json' | ConvertFrom-Json).data.processes | Where-Object { $_.name -eq 'lsass.exe' } | Select-Object -First 1
+  if ($mm -and $mm.executable) { throw 'the memory of lsass was queried' }
   $true
 }
 Check 'V-FIX: SAM and SECURITY logs and RegBack copies only with explicit confirmation' {
