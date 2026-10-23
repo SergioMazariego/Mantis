@@ -135,6 +135,8 @@ mantis-collect --profile standard --temp-ext exe,dll,ps1 --temp-modified-days 30
 
 Every copied file and exported event log records the source file's **creation, last access and last write times** (`source_created_utc`, `source_accessed_utc`, `source_modified_utc`) in its manifest notes. They are read before the content, with a handle that cannot alter them.
 
+**Process evidence.** Beyond the process list, Mantis records what an investigator needs to judge a process: parent validity (running, exited or PID reused), token privileges, logon session and impersonation, protection level (PPL), architecture, the PEB's current directory and image path (a mismatch with the kernel's path suggests hollowing), image hashes with signer, company and version, and for every thread its real Win32 start address, stack bounds and TEB. Standard and Full add the **executable memory map** (protection, backing file, RWX and unbacked-executable flags) and the **hash and signature of every loaded module**; Full adds **named handles** (handles to other processes with decoded access, mutexes, ALPC ports, keys, files and pipes). Process **environment variables**, which often hold secrets, are only collected with `--confirm-sensitive`.
+
 Useful options: `--case`, `--tenant`, `--actor` and `--title` label the case; `--max-total-bytes` sets the collection cap; `--cli` forces the terminal menu; `--force` continues when free space looks short.
 
 On Windows the default is a dark window with profile chips, search, a category sidebar, privilege and size columns, a live execution screen with per-source status, safe cancellation (evidence already acquired is kept) and a final summary.

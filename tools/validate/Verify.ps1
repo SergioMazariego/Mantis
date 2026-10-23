@@ -174,6 +174,75 @@ Check 'V-PROC: performance counters (priority, CPU times, virtual size, pools, t
   if ($common -lt 0.8 * $detailed.Count) { throw "only $common of $($detailed.Count) detailed processes appear in the performance snapshot" }
   $true
 }
+Check 'V-PROC: threads carry the Win32 start address, stack bounds and TEB' {
+  $threads = @((Text 'processes\processes-performance.json' | ConvertFrom-Json).data.processes | ForEach-Object { $_.thread_detail } | Where-Object { $_ })
+  if ($threads.Count -lt 100) { throw "only $($threads.Count) threads" }
+  $with = @($threads | Where-Object { $_.win32_start_address -and $_.win32_start_address -ne '0x0' -and $_.teb_base -and $_.stack_base })
+  if ($with.Count -lt 0.8 * $threads.Count) { throw "only $($with.Count) of $($threads.Count) threads have a Win32 start address, stack and TEB" }
+  $true
+}
+Check 'V-PROC: processes carry token, protection, architecture, PEB, parent validity, signer and user fields' {
+  $d = (Text 'processes\processes-detailed.json' | ConvertFrom-Json).data.processes
+  $n = $d.Count
+  $tok = @($d | Where-Object { $_.privileges_enabled -or $_.privileges_disabled }).Count
+  $arch = @($d | Where-Object { $_.architecture }).Count
+  $peb = @($d | Where-Object { $_.peb_image_path -and $_.current_directory }).Count
+  $par = @($d | Where-Object { $_.parent_state }).Count
+  $when = @($d | Where-Object { $_.collected_utc }).Count
+  $logon = @($d | Where-Object { $_.logon_session_id -and $_.token_type }).Count
+  $signer = @($d | Where-Object { $_.image.signer }).Count
+  $company = @($d | Where-Object { $_.image.company }).Count
+  if ($tok -lt 0.5 * $n -or $arch -lt 0.5 * $n -or $par -lt 0.9 * $n -or $when -lt 0.9 * $n -or $logon -lt 0.5 * $n) { throw "fields too sparse of $n processes: privileges=$tok architecture=$arch parent_state=$par collected=$when logon=$logon" }
+  if ($peb -lt 0.3 * $n) { throw "only $peb of $n processes have the PEB image path and current directory" }
+  if ($signer -lt 20 -or $company -lt 20) { throw "only $signer signers and $company companies in process images" }
+  $mismatch = @($d | Where-Object { $_.peb_image_matches -eq $false }).Count
+  if ($mismatch -gt 0.1 * $n) { throw "$mismatch processes have a PEB image path different from the kernel's" }
+  $ping = $d | Where-Object { $_.name -eq 'PING.EXE' -and $_.command_line -match '127.0.0.1' } | Select-Object -First 1
+  if ($ping -and ($ping.parent_state -notin 'running', 'exited' -or -not $ping.current_directory)) { throw "ping fixture detail wrong: $($ping | Select-Object parent_state, current_directory | ConvertTo-Json -Compress)" }
+  $true
+}
+Check 'V-PROC: loaded module images carry hashes, signatures and the processes that loaded them' {
+  $d = (Text 'processes\processes-module-images.json' | ConvertFrom-Json).data
+  if ($d.image_count -lt 100) { throw "only $($d.image_count) module images" }
+  $hashed = @($d.images | Where-Object { $_.sha256 }).Count
+  $signed = @($d.images | Where-Object { $_.signer }).Count
+  $loaded = @($d.images | Where-Object { $_.loaded_by_count -ge 1 -and $_.loaded_by }).Count
+  if ($hashed -lt 0.8 * $d.image_count -or $signed -lt 0.4 * $d.image_count -or $loaded -lt $d.image_count) { throw "images=$($d.image_count) hashed=$hashed signed=$signed loaded_by=$loaded" }
+  $true
+}
+Check 'V-PROC: memory map lists executable regions with protection and backing file' {
+  $d = (Text 'processes\processes-memory-map.json' | ConvertFrom-Json).data
+  if ($d.process_count -lt 20) { throw "only $($d.process_count) processes" }
+  $regions = @($d.processes | ForEach-Object { $_.executable } | Where-Object { $_ })
+  if ($regions.Count -lt 100) { throw "only $($regions.Count) executable regions" }
+  $image = @($regions | Where-Object { $_.type -eq 'image' -and $_.file -and $_.protect }).Count
+  if ($image -lt 50) { throw "only $image image regions with a file and protection" }
+  $true
+}
+Check 'V-PROC: the handle table names its object types' {
+  if ($Profile -ne 'full') { return $true }  # handle sources are Full-only
+  $d = (Text 'processes\processes-handle-table.json' | ConvertFrom-Json).data
+  $names = @($d.object_types | ForEach-Object { $_.name })
+  foreach ($t in 'Process', 'Thread', 'File', 'Key') { if ($names -notcontains $t) { throw "object type $t missing from the type table" } }
+  $named = @($d.processes | Where-Object { $_.by_type -and $_.by_type.File }).Count
+  if ($named -lt 10) { throw "only $named processes with handles counted by type name" }
+  $true
+}
+Check 'V-PROC: named handles list processes, keys, files and mutexes' {
+  if ($Profile -ne 'full') { return $true }
+  $d = (Text 'processes\processes-handles.json' | ConvertFrom-Json).data
+  if ($d.listed -lt 100) { throw "only $($d.listed) handles listed of $($d.total_handles)" }
+  $types = @($d.handles | ForEach-Object { $_.type } | Select-Object -Unique)
+  foreach ($t in 'Key', 'File') { if ($types -notcontains $t) { throw "no $t handles listed (types: $($types -join ','))" } }
+  if (@($d.handles | Where-Object { $_.name }).Count -lt 50) { throw 'too few handles carry a resolved name' }
+  $true
+}
+Check 'V-PROC: process environment is collected only with explicit confirmation' {
+  $a = Art 'processes-environment'
+  if (-not $a) { return $true }  # sensitive: absent unless --confirm-sensitive was given
+  $d = (Text 'processes\processes-environment.json' | ConvertFrom-Json).data
+  @($d.processes | Where-Object { $_.variables -and ($_.variables | Where-Object { $_ -like 'PATH=*' }) }).Count -ge 10
+}
 Check 'V-ACTIONS: the manifest carries an action type apart from the source type' {
   $with = @($man.artifacts | Where-Object { $_.action_types })
   if ($with.Count -lt 20) { throw "only $($with.Count) artifacts carry action_types" }

@@ -4,15 +4,9 @@ package windows
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/binary"
-	"encoding/hex"
-	"errors"
 	"fmt"
-	"io"
 	"sort"
-	"strings"
-	"sync"
 	"time"
 	"unsafe"
 
@@ -45,35 +39,45 @@ type moduleInfo struct {
 	Size uint32 `json:"size"`
 }
 
-type imageInfo struct {
-	Path      string `json:"path"`
-	SHA256    string `json:"sha256,omitempty"`
-	SizeBytes int64  `json:"size_bytes,omitempty"`
-	Signature string `json:"authenticode,omitempty"`
-	TrustCode string `json:"authenticode_result,omitempty"`
-	Error     string `json:"error,omitempty"`
-}
-
 type procRecord struct {
-	PID          uint32         `json:"pid"`
-	ParentPID    uint32         `json:"parent_pid"`
-	Name         string         `json:"name"`
-	ImagePath    string         `json:"image_path,omitempty"`
-	CommandLine  string         `json:"command_line,omitempty"`
-	CreatedUTC   string         `json:"created_utc,omitempty"`
-	SessionID    *uint32        `json:"session_id,omitempty"`
-	Threads      uint32         `json:"threads"`
-	HandleCount  uint32         `json:"handle_count,omitempty"`
-	User         string         `json:"user,omitempty"`
-	UserSID      string         `json:"user_sid,omitempty"`
-	Elevated     *bool          `json:"token_elevated,omitempty"`
-	Integrity    string         `json:"integrity_level,omitempty"`
+	PID          uint32  `json:"pid"`
+	ParentPID    uint32  `json:"parent_pid"`
+	ParentName   string  `json:"parent_name,omitempty"`  // only when the parent is still running
+	ParentState  string  `json:"parent_state,omitempty"` // running, exited, or pid-reused (the parent PID now belongs to a newer process)
+	Name         string  `json:"name"`
+	ImagePath    string  `json:"image_path,omitempty"`
+	CommandLine  string  `json:"command_line,omitempty"`
+	CreatedUTC   string  `json:"created_utc,omitempty"`
+	CollectedUTC string  `json:"collected_utc,omitempty"` // when this record was read: the list is walked over several seconds
+	SessionID    *uint32 `json:"session_id,omitempty"`
+	Threads      uint32  `json:"threads"`
+	HandleCount  uint32  `json:"handle_count,omitempty"`
+	User         string  `json:"user,omitempty"`
+	UserSID      string  `json:"user_sid,omitempty"`
+	Elevated     *bool   `json:"token_elevated,omitempty"`
+	Integrity    string  `json:"integrity_level,omitempty"`
+
+	TokenType          string   `json:"token_type,omitempty"`
+	Impersonation      string   `json:"impersonation_level,omitempty"`
+	ElevationType      string   `json:"elevation_type,omitempty"`
+	LogonSession       string   `json:"logon_session_id,omitempty"`
+	AppContainer       *bool    `json:"app_container,omitempty"`
+	PrivilegesEnabled  []string `json:"privileges_enabled,omitempty"`
+	PrivilegesDisabled []string `json:"privileges_disabled,omitempty"`
+	Protection         string   `json:"protection,omitempty"` // PPL/PP and signer, empty when unprotected
+	Architecture       string   `json:"architecture,omitempty"`
+
+	CurrentDirectory string `json:"current_directory,omitempty"` // from the PEB
+	PEBImagePath     string `json:"peb_image_path,omitempty"`
+	PEBImageMatches  *bool  `json:"peb_image_matches,omitempty"` // PEB image path equals the path the kernel reports: false suggests hollowing or a spoofed image
+	WindowTitle      string `json:"window_title,omitempty"`
+
 	WorkingSet   uint64         `json:"working_set_bytes,omitempty"`
 	PeakWS       uint64         `json:"peak_working_set_bytes,omitempty"`
 	PrivateBytes uint64         `json:"private_bytes,omitempty"`
 	PageFaults   uint32         `json:"page_faults,omitempty"`
 	Modules      []moduleInfo   `json:"modules,omitempty"`
-	Image        *imageInfo     `json:"image,omitempty"`
+	Image        *enrichedImage `json:"image,omitempty"`
 	Sockets      []socketRecord `json:"sockets,omitempty"`
 	Inaccessible []string       `json:"inaccessible,omitempty"` // what could not be read and why (protected process, access denied)
 }
@@ -170,54 +174,8 @@ func modulesOf(pid uint32) ([]moduleInfo, error) {
 
 // ---- image hashing and Authenticode ----
 
-type imageCache struct {
-	mu    sync.Mutex
-	seen  map[string]*imageInfo
-	total int64
-}
-
-func (c *imageCache) describe(ctx context.Context, path string) *imageInfo {
-	key := strings.ToLower(path)
-	c.mu.Lock()
-	if v, ok := c.seen[key]; ok {
-		c.mu.Unlock()
-		return v
-	}
-	info := &imageInfo{Path: path}
-	c.seen[key] = info
-	c.mu.Unlock()
-
-	f, err := directOpen(path)
-	if err != nil {
-		info.Error = "open: " + err.Error()
-		return info
-	}
-	defer f.Close()
-	st, err := f.Stat()
-	if err != nil {
-		info.Error = err.Error()
-		return info
-	}
-	info.SizeBytes = st.Size()
-	c.mu.Lock()
-	over := st.Size() > maxHashFileBytes || c.total+st.Size() > maxHashTotalBytes
-	if !over {
-		c.total += st.Size()
-	}
-	c.mu.Unlock()
-	if over {
-		info.Error = "not hashed: file exceeds the per-file or total hashing budget"
-	} else {
-		h := sha256.New()
-		if _, err := io.Copy(h, &ctxReader{ctx, f}); err != nil {
-			info.Error = "hash: " + err.Error()
-		} else {
-			info.SHA256 = hex.EncodeToString(h.Sum(nil))
-		}
-	}
-	info.Signature, info.TrustCode = verifySignature(path)
-	return info
-}
+// Process images are described with the same enrichment used for persistence images (see imageEnricher):
+// hashes, Authenticode verdict and signer, company, product, version, original file name and import hash.
 
 type wintrustFileInfo struct {
 	Size      uint32
@@ -315,7 +273,7 @@ func processSnapshotDetailed(ctx context.Context, w *warnings, withModules, with
 	for _, s := range sockets {
 		byPID[s.PID] = append(byPID[s.PID], s)
 	}
-	cache := &imageCache{seen: map[string]*imageInfo{}}
+	cache := &imageEnricher{seen: map[string]*enrichedImage{}}
 	denied := 0
 	for i := range procs {
 		if err := ctx.Err(); err != nil {
@@ -323,6 +281,7 @@ func processSnapshotDetailed(ctx context.Context, w *warnings, withModules, with
 		}
 		p := &procs[i]
 		p.Sockets = byPID[p.PID]
+		p.CollectedUTC = time.Now().UTC().Format(time.RFC3339Nano)
 		if p.PID == 0 {
 			continue
 		}
@@ -372,7 +331,11 @@ func processSnapshotDetailed(ctx context.Context, w *warnings, withModules, with
 			if tu, err := tok.GetTokenUser(); err == nil {
 				p.UserSID = tu.User.Sid.String()
 				if !isLocalSID(p.UserSID) {
-					p.User = "(domain SID; name not resolved to avoid contacting a domain controller)"
+					if name := profileUserName(p.UserSID); name != "" {
+						p.User = name + " (domain account; name taken from the local profile, no domain controller contacted)"
+					} else {
+						p.User = "(domain SID; name not resolved to avoid contacting a domain controller)"
+					}
 				} else if acct, dom, _, err := tu.User.Sid.LookupAccount(""); err == nil {
 					p.User = dom + `\` + acct
 				}
@@ -380,11 +343,30 @@ func processSnapshotDetailed(ctx context.Context, w *warnings, withModules, with
 			el := tok.IsElevated()
 			p.Elevated = &el
 			p.Integrity = integrityName(tok)
+			td := readTokenDetails(tok)
+			p.TokenType, p.Impersonation, p.ElevationType, p.LogonSession, p.AppContainer = td.Type, td.Impersonation, td.Elevation, td.LogonSession, td.AppContainer
+			p.PrivilegesEnabled, p.PrivilegesDisabled = td.Enabled, td.Disabled
 			tok.Close()
 		} else {
 			p.Inaccessible = append(p.Inaccessible, "token: "+err.Error())
 		}
+		p.Protection = processProtection(h)
+		p.Architecture, _ = processArchitecture(h)
 		windows.CloseHandle(h)
+		if ph, err := windows.OpenProcess(windows.PROCESS_QUERY_INFORMATION|windows.PROCESS_VM_READ, false, p.PID); err == nil {
+			if info, perr := readPEB(ph); perr == nil {
+				p.CurrentDirectory, p.PEBImagePath, p.WindowTitle = info.CurrentDirectory, info.ImagePath, info.WindowTitle
+				if info.ImagePath != "" && p.ImagePath != "" {
+					same := samePath(info.ImagePath, p.ImagePath)
+					p.PEBImageMatches = &same
+				}
+			} else {
+				p.Inaccessible = append(p.Inaccessible, "PEB: "+perr.Error())
+			}
+			windows.CloseHandle(ph)
+		} else {
+			p.Inaccessible = append(p.Inaccessible, "PEB: OpenProcess(read): "+err.Error())
+		}
 		if withModules {
 			if mods, err := modulesOf(p.PID); err == nil {
 				p.Modules = mods
@@ -400,96 +382,66 @@ func processSnapshotDetailed(ctx context.Context, w *warnings, withModules, with
 		w.add("%d process(es) could not be opened (protected processes or insufficient privilege); they are listed with limited fields", denied)
 	}
 	sort.Slice(procs, func(i, j int) bool { return procs[i].PID < procs[j].PID })
+	resolveParents(procs)
 	return map[string]any{"processes": procs, "count": len(procs), "elevated": IsElevated(),
-		"note": "protected and inaccessible processes are listed with the reason; no protection was bypassed"}, nil
+		"note": "protected and inaccessible processes are listed with the reason; no protection was bypassed. collected_utc is when each record was read; parent_state tells whether the parent is still running"}, nil
 }
 
 // ---- handle table (types and owners only; names are not resolved) ----
 
 func handleTable(ctx context.Context, w *warnings) (any, error) {
-	const systemExtendedHandleInformation = 64
-	size := uint32(4 << 20)
-	var buf []byte
-	complete := false
-	for i := 0; i < 8 && !complete; i++ {
-		buf = make([]byte, size)
-		var ret uint32
-		r, _, _ := pNtQuerySystemInfo.Call(systemExtendedHandleInformation, uintptr(unsafe.Pointer(&buf[0])), uintptr(size), uintptr(unsafe.Pointer(&ret)))
-		if uint32(r) == statusInfoLengthMismatch {
-			size = ret + (1 << 20)
-			continue
-		}
-		if r != 0 {
-			return nil, fmt.Errorf("NtQuerySystemInformation(SystemExtendedHandleInformation) NTSTATUS 0x%08x", uint32(r))
-		}
-		complete = true
-	}
-	if !complete {
-		return nil, errors.New("the handle table kept growing while it was being read")
-	}
-	// SYSTEM_HANDLE_INFORMATION_EX { ULONG_PTR NumberOfHandles; ULONG_PTR Reserved; Entries[] }
-	// SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX { PVOID Object; ULONG_PTR UniqueProcessId; ULONG_PTR HandleValue;
-	//   ULONG GrantedAccess; USHORT CreatorBackTraceIndex; USHORT ObjectTypeIndex; ULONG HandleAttributes; ULONG Reserved; }
-	ps := int(unsafe.Sizeof(uintptr(0)))
-	var count int
-	if ps == 8 {
-		count = int(binary.LittleEndian.Uint64(buf[:8]))
-	} else {
-		count = int(binary.LittleEndian.Uint32(buf[:4]))
-	}
-	entrySize := 28 // x86: Object@0 Pid@4 Handle@8 Access@12 BackTrace@16 TypeIndex@18 Attributes@20 Reserved@24
-	pidOff, typeOff := 4, 18
-	if ps == 8 {
-		entrySize, pidOff, typeOff = 40, 8, 30
+	entries, err := readSystemHandles(ctx)
+	if err != nil {
+		return nil, err
 	}
 	type perProc struct {
-		PID     uint64         `json:"pid"`
-		Handles int            `json:"handle_count"`
-		ByType  map[uint16]int `json:"by_type_index"`
+		PID       uint64         `json:"pid"`
+		Handles   int            `json:"handle_count"`
+		ByType    map[string]int `json:"by_type"`
+		ByTypeIdx map[uint16]int `json:"by_type_index"`
+	}
+	// the type table of this build turns the numeric indexes into names (Process, Thread, File, Key, Mutant, ...)
+	types, terr := queryObjectTypes()
+	typeName := map[uint16]string{}
+	for _, t := range types {
+		typeName[t.Index] = t.Name
+	}
+	if terr != nil {
+		w.add("object type table unavailable (%v): handles are counted by type index only", terr)
 	}
 	agg := map[uint64]*perProc{}
-	limit := count
-	if 2*ps+entrySize*limit > len(buf) {
-		limit = (len(buf) - 2*ps) / entrySize
-	}
-	for i := 0; i < limit; i++ {
-		e := buf[2*ps+entrySize*i:]
-		var pid uint64
-		var typeIdx uint16
-		if ps == 8 {
-			pid = binary.LittleEndian.Uint64(e[pidOff:])
-		} else {
-			pid = uint64(binary.LittleEndian.Uint32(e[pidOff:]))
-		}
-		typeIdx = binary.LittleEndian.Uint16(e[typeOff:])
-		pp := agg[pid]
+	for _, e := range entries {
+		pp := agg[e.PID]
 		if pp == nil {
-			pp = &perProc{PID: pid, ByType: map[uint16]int{}}
-			agg[pid] = pp
+			pp = &perProc{PID: e.PID, ByType: map[string]int{}, ByTypeIdx: map[uint16]int{}}
+			agg[e.PID] = pp
 		}
 		pp.Handles++
-		pp.ByType[typeIdx]++
+		pp.ByTypeIdx[e.Type]++
+		if n := typeName[e.Type]; n != "" {
+			pp.ByType[n]++
+		}
 	}
 	out := make([]*perProc, 0, len(agg))
 	for _, v := range agg {
 		out = append(out, v)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].PID < out[j].PID })
-	w.add("handle object names are not resolved (resolving names can block on pipes and devices); only counts per process and object-type index are recorded")
-	return map[string]any{"total_handles": count, "processes": out,
-		"note": "object type indexes are build-specific; map them with the type table of the same build"}, nil
+	w.add("handle object names are not resolved in this table (resolving names can block on pipes and devices); see processes-handles for named handles")
+	return map[string]any{"total_handles": len(entries), "object_types": types, "processes": out,
+		"note": "handles aggregated per process by object type name; by_type_index keeps the raw build-specific index, mapped by object_types"}, nil
 }
 
 func processSources() []collector.Source {
 	m := func(name, desc string, p collector.ProfileMask, priv collector.Privilege, art ...string) collector.Meta {
 		return baseMeta(name, desc, "processes", priv, p, art...)
 	}
-	list := withDetect(jsonSource("processes-detailed", m("Processes (detailed)", "PID/PPID, image path, command line, creation time, session, token user/elevation/integrity, memory counters, handle count, loaded modules, image SHA-256 and Authenticode status, owned sockets",
+	list := withDetect(jsonSource("processes-detailed", m("Processes (detailed)", "PID/PPID and parent validity, image path, command line, current directory and window title from the PEB, creation time, session, token user/elevation/integrity/privileges/logon session, protection level, architecture, memory counters, handle count, loaded modules, image hashes, Authenticode status and signer, company and version, owned sockets",
 		collector.InAll, collector.PrivDebug, "execution/evtx-4688-process-created.md"), "toolhelp+ntquery+wintrust", "api://processes", func(ctx context.Context, w *warnings) (any, error) {
 		return processSnapshotDetailed(ctx, w, true, true)
 	}), available)
 	list.Meta.SideEffects = "reads executable files to hash them (updates last-access times on volumes where that is enabled)"
-	handles := withDetect(jsonSource("processes-handle-table", m("Handle table (counts per process/type)", "System handle table aggregated per process and object type index", collector.InFullOnly, collector.PrivDebug),
+	handles := withDetect(jsonSource("processes-handle-table", m("Handle table (counts per process/type)", "System handle table aggregated per process and object type, with the build's object type table", collector.InFullOnly, collector.PrivDebug),
 		"ntquerysysteminformation", "api://handle-table", handleTable), available)
-	return []collector.Source{list, handles, procPerfSource()}
+	return []collector.Source{list, handles, procPerfSource(), processHandlesSource(), processMemoryMapSource(), processModuleImagesSource(), processEnvironmentSource()}
 }

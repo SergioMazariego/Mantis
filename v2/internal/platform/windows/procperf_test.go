@@ -63,7 +63,7 @@ func buildProcessBuffer() []byte {
 
 func TestParseProcessInformationReadsProcessesAndThreads(t *testing.T) {
 	buf := buildProcessBuffer()
-	procs, warns := parseProcessInformation(buf, uintptr(unsafe.Pointer(&buf[0])), true)
+	procs, warns := parseProcessInformation(buf, uintptr(unsafe.Pointer(&buf[0])), true, false)
 	if len(warns) != 0 {
 		t.Fatalf("unexpected warnings: %v", warns)
 	}
@@ -95,7 +95,7 @@ func TestParseProcessInformationReadsProcessesAndThreads(t *testing.T) {
 func TestParseProcessInformationNeverReadsOutOfBounds(t *testing.T) {
 	buf := buildProcessBuffer()
 	short := buf[:spiHeaderSize+10] // truncated inside the first entry's thread array
-	procs, warns := parseProcessInformation(short, uintptr(unsafe.Pointer(&short[0])), true)
+	procs, warns := parseProcessInformation(short, uintptr(unsafe.Pointer(&short[0])), true, false)
 	if len(warns) == 0 {
 		t.Error("a truncated buffer must produce a warning")
 	}
@@ -103,7 +103,39 @@ func TestParseProcessInformationNeverReadsOutOfBounds(t *testing.T) {
 	// a NextEntryOffset that points past the end must not panic
 	bad := append([]byte(nil), buf...)
 	binary.LittleEndian.PutUint32(bad[0:], 1<<30)
-	if _, w := parseProcessInformation(bad, uintptr(unsafe.Pointer(&bad[0])), false); len(w) == 0 {
+	if _, w := parseProcessInformation(bad, uintptr(unsafe.Pointer(&bad[0])), false, false); len(w) == 0 {
 		t.Error("an out-of-range NextEntryOffset must produce a warning")
+	}
+}
+
+func TestParseExtendedThreadsReadsWin32StartStackAndTeb(t *testing.T) {
+	buf := make([]byte, 4096)
+	put32 := func(off int, v uint32) { binary.LittleEndian.PutUint32(buf[off:], v) }
+	put64 := func(off int, v uint64) { binary.LittleEndian.PutUint64(buf[off:], v) }
+	put32(0, 0) // single entry
+	put32(4, 2) // two threads
+	put64(80, 4321)
+	for i := 0; i < 2; i++ {
+		th := spiHeaderSize + i*sthreadExtSize
+		put64(th+32, 0x7ffb00001000) // kernel start: ntdll!RtlUserThreadStart
+		put64(th+48, uint64(500+i))  // tid
+		put32(th+68, 5)
+		put64(th+80, 0x00000050a0000000+uint64(i)) // stack base
+		put64(th+88, 0x00000050a0000000-0x10000)   // stack limit
+		put64(th+96, 0x1f2d0000000+uint64(i))      // Win32 start address, inside no module
+		put64(th+104, 0x50a1000000)                // TEB
+	}
+	procs, warns := parseProcessInformation(buf[:spiHeaderSize+2*sthreadExtSize], uintptr(unsafe.Pointer(&buf[0])), true, true)
+	if len(warns) != 0 || len(procs) != 1 || len(procs[0].ThreadDetail) != 2 {
+		t.Fatalf("expected 1 process with 2 threads, got %+v %v", procs, warns)
+	}
+	th := procs[0].ThreadDetail[1]
+	if th.TID != 501 || th.StartAddress != "0x7ffb00001000" || th.Win32Start != "0x1f2d0000001" || th.TebBase != "0x50a1000000" || th.StackBase != "0x50a0000001" || th.StackLimit != "0x509fff0000" {
+		t.Errorf("extended thread fields wrong: %+v", th)
+	}
+	// the non-extended layout must not invent these fields
+	plain, _ := parseProcessInformation(buf[:spiHeaderSize+2*sthreadSize], uintptr(unsafe.Pointer(&buf[0])), true, false)
+	if len(plain) == 1 && len(plain[0].ThreadDetail) > 0 && plain[0].ThreadDetail[0].Win32Start != "" {
+		t.Error("the plain layout carries no Win32 start address")
 	}
 }
