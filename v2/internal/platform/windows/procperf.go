@@ -21,9 +21,12 @@ import (
 // without elevation and also covers protected processes.
 
 const (
-	systemProcessInformation = 5
-	spiHeaderSize            = 256 // SYSTEM_PROCESS_INFORMATION without the thread array (64-bit layout)
-	sthreadSize              = 80  // SYSTEM_THREAD_INFORMATION (64-bit layout)
+	systemProcessInformation         = 5
+	systemExtendedProcessInformation = 57
+	spiHeaderSize                    = 256 // SYSTEM_PROCESS_INFORMATION without the thread array (64-bit layout)
+	sthreadSize                      = 80  // SYSTEM_THREAD_INFORMATION (64-bit layout)
+	sthreadExtSize                   = 136 // SYSTEM_EXTENDED_THREAD_INFORMATION: adds stack base/limit, Win32 start address, TEB base
+	statusInvalidInfoClass           = 0xC0000003
 )
 
 var threadStates = map[uint32]string{0: "Initialized", 1: "Ready", 2: "Running", 3: "Standby", 4: "Terminated", 5: "Waiting", 6: "Transition",
@@ -42,7 +45,11 @@ type perfThread struct {
 	ContextSwitches uint32 `json:"context_switches"`
 	State           string `json:"state"`
 	WaitReason      string `json:"wait_reason,omitempty"`
-	StartAddress    string `json:"start_address,omitempty"`
+	StartAddress    string `json:"start_address,omitempty"`       // kernel-reported start (for user threads usually ntdll!RtlUserThreadStart)
+	Win32Start      string `json:"win32_start_address,omitempty"` // the function the thread was asked to run: where injected threads stand out
+	StackBase       string `json:"stack_base,omitempty"`
+	StackLimit      string `json:"stack_limit,omitempty"`
+	TebBase         string `json:"teb_base,omitempty"`
 	CreatedUTC      string `json:"created_utc,omitempty"`
 	UserTime100ns   uint64 `json:"user_time_100ns"`
 	KernelTime100ns uint64 `json:"kernel_time_100ns"`
@@ -99,8 +106,13 @@ func filetimeUTC(ft uint64) string {
 
 // parseProcessInformation decodes a SystemProcessInformation buffer. base is the address of buf[0]:
 // image-name pointers inside the buffer are absolute addresses and are translated back to offsets.
-// Malformed entries stop the walk with a warning instead of reading out of bounds.
-func parseProcessInformation(buf []byte, base uintptr, withThreads bool) ([]perfProcess, []string) {
+// Malformed entries stop the walk with a warning instead of reading out of bounds. extended selects the
+// SystemExtendedProcessInformation thread layout, which also carries the Win32 start address, stack and TEB.
+func parseProcessInformation(buf []byte, base uintptr, withThreads, extended bool) ([]perfProcess, []string) {
+	stride := sthreadSize
+	if extended {
+		stride = sthreadExtSize
+	}
 	var out []perfProcess
 	var warns []string
 	off := 0
@@ -139,13 +151,13 @@ func parseProcessInformation(buf []byte, base uintptr, withThreads bool) ([]perf
 			p.Name = "Idle"
 		}
 		tOff := off + spiHeaderSize
-		if nthreads < 0 || tOff+nthreads*sthreadSize > len(buf) {
+		if nthreads < 0 || tOff+nthreads*stride > len(buf) {
 			warns = append(warns, fmt.Sprintf("pid %d: thread array runs past the buffer", p.PID))
-			nthreads = max(0, (len(buf)-tOff)/sthreadSize)
+			nthreads = max(0, (len(buf)-tOff)/stride)
 		}
 		if withThreads {
 			for i := 0; i < nthreads; i++ {
-				t := buf[tOff+i*sthreadSize:]
+				t := buf[tOff+i*stride:]
 				t32 := func(o int) uint32 { return binary.LittleEndian.Uint32(t[o:]) }
 				t64 := func(o int) uint64 { return binary.LittleEndian.Uint64(t[o:]) }
 				st, ok := threadStates[t32(68)]
@@ -156,6 +168,10 @@ func parseProcessInformation(buf []byte, base uintptr, withThreads bool) ([]perf
 					KernelTime100ns: t64(0), UserTime100ns: t64(8), CreatedUTC: filetimeUTC(t64(16)), WaitTimeTicks: t32(24),
 					StartAddress: fmt.Sprintf("0x%x", t64(32)), TID: t64(48), Priority: int32(t32(56)), BasePriority: int32(t32(60)),
 					ContextSwitches: t32(64), State: st,
+				}
+				if extended {
+					th.StackBase, th.StackLimit = fmt.Sprintf("0x%x", t64(80)), fmt.Sprintf("0x%x", t64(88))
+					th.Win32Start, th.TebBase = fmt.Sprintf("0x%x", t64(96)), fmt.Sprintf("0x%x", t64(104))
 				}
 				if st == "Waiting" || st == "WaitingForProcessInUse" {
 					if wr := int(t32(72)); wr >= 0 && wr < len(waitReasons) {
@@ -176,33 +192,43 @@ func parseProcessInformation(buf []byte, base uintptr, withThreads bool) ([]perf
 	return out, warns
 }
 
-func processPerformance(ctx context.Context, w *warnings) (any, error) {
-	if unsafe.Sizeof(uintptr(0)) != 8 {
-		return nil, fmt.Errorf("%w: the process information layout is only implemented for 64-bit Windows", collector.ErrNotSupported)
-	}
+// querySystemProcesses reads the system process list with the given information class, growing the buffer
+// while the list changes. status carries the NTSTATUS when the call itself failed.
+func querySystemProcesses(ctx context.Context, class uintptr) (buf []byte, ret uint32, status uint32, err error) {
 	size := uint32(2 << 20)
-	var buf []byte
-	var ret uint32
-	complete := false
-	for i := 0; i < 12 && !complete; i++ {
+	for i := 0; i < 12; i++ {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return nil, 0, 0, err
 		}
 		buf = make([]byte, size)
-		r, _, _ := pNtQuerySystemInfo.Call(systemProcessInformation, uintptr(unsafe.Pointer(&buf[0])), uintptr(size), uintptr(unsafe.Pointer(&ret)))
+		r, _, _ := pNtQuerySystemInfo.Call(class, uintptr(unsafe.Pointer(&buf[0])), uintptr(size), uintptr(unsafe.Pointer(&ret)))
 		switch {
 		case uint32(r) == statusInfoLengthMismatch:
 			size = ret + (512 << 10) // the process list can grow between the size query and the read
 		case r != 0:
-			return nil, fmt.Errorf("NtQuerySystemInformation(SystemProcessInformation) NTSTATUS 0x%08x", uint32(r))
+			return nil, 0, uint32(r), fmt.Errorf("NtQuerySystemInformation(class %d) NTSTATUS 0x%08x", class, uint32(r))
 		default:
-			complete = true
+			return buf, ret, 0, nil
 		}
 	}
-	if !complete {
-		return nil, errors.New("the process list kept growing while it was being read")
+	return nil, 0, 0, errors.New("the process list kept growing while it was being read")
+}
+
+func processPerformance(ctx context.Context, w *warnings) (any, error) {
+	if unsafe.Sizeof(uintptr(0)) != 8 {
+		return nil, fmt.Errorf("%w: the process information layout is only implemented for 64-bit Windows", collector.ErrNotSupported)
 	}
-	procs, warns := parseProcessInformation(buf[:ret], uintptr(unsafe.Pointer(&buf[0])), true)
+	extended := true
+	buf, ret, status, err := querySystemProcesses(ctx, systemExtendedProcessInformation)
+	if err != nil && status == statusInvalidInfoClass { // older builds: the thread layout without Win32 start address
+		extended = false
+		w.add("SystemExtendedProcessInformation is not available on this build: thread Win32 start addresses, stacks and TEBs are not recorded")
+		buf, ret, _, err = querySystemProcesses(ctx, systemProcessInformation)
+	}
+	if err != nil {
+		return nil, err
+	}
+	procs, warns := parseProcessInformation(buf[:ret], uintptr(unsafe.Pointer(&buf[0])), true, extended)
 	for _, x := range warns {
 		w.add("%s", x)
 	}
@@ -212,7 +238,7 @@ func processPerformance(ctx context.Context, w *warnings) (any, error) {
 		threads += len(p.ThreadDetail)
 	}
 	return map[string]any{
-		"note":          "SystemProcessInformation snapshot: base priority, CPU times (100 ns units), virtual/working/private/pool memory (bytes), page faults, I/O counters and per-thread state, priority and context switches",
+		"note":          "SystemExtendedProcessInformation snapshot: base priority, CPU times (100 ns units), virtual/working/private/pool memory (bytes), page faults, I/O counters and per-thread state, priority, context switches, kernel and Win32 start addresses, stack bounds and TEB",
 		"process_count": len(procs), "thread_count": threads, "processes": procs,
 	}, nil
 }
