@@ -13,6 +13,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -93,7 +94,7 @@ func resolveExecutable(launch string) string {
 	if s == "" {
 		return ""
 	}
-	s = expandEnv(s)
+	s = expandForEntry(s, "") // machine context: user-scoped variables are not resolved into the collector's profile
 	var p string
 	if strings.HasPrefix(s, `"`) {
 		if end := strings.Index(s[1:], `"`); end >= 0 {
@@ -133,6 +134,19 @@ func resolveExecutable(launch string) string {
 		}
 	}
 	return p
+}
+
+// inSystemDir resolves a DLL named in the registry: a bare name lives in the given system directory, an absolute
+// path (or environment-variable path) is used as written, and an empty value names nothing.
+func inSystemDir(win, sysDir, name string) string {
+	name = strings.TrimSpace(strings.Trim(strings.TrimSpace(name), `"`))
+	switch {
+	case name == "":
+		return ""
+	case strings.ContainsAny(name, `\/:%`):
+		return name
+	}
+	return filepath.Join(win, sysDir, name)
 }
 
 // fileVersionStrings reads the string table of a file's version resource.
@@ -208,6 +222,14 @@ func (e *imageEnricher) describe(ctx context.Context, path string) *enrichedImag
 	}
 	img := &enrichedImage{Path: path}
 	e.seen[key] = img
+	if isRemotePath(path) {
+		img.Error = "remote image not read: opening it would contact another host"
+		return img
+	}
+	if cloudPlaceholder(path) {
+		img.Error = "cloud placeholder not read: opening it would download the file"
+		return img
+	}
 	f, err := directOpen(path)
 	if err != nil {
 		img.Error = "open: " + err.Error()
@@ -221,15 +243,16 @@ func (e *imageEnricher) describe(ctx context.Context, path string) *enrichedImag
 	}
 	img.Exists, img.SizeBytes, img.ModifiedUTC = true, st.Size(), st.ModTime().UTC().Format(time.RFC3339Nano)
 	if st.Size() > maxHashFileBytes || e.total+st.Size() > maxHashTotalBytes {
-		img.Error = "not hashed: file exceeds the per-file or total hashing budget"
+		// the signature check, PE hashes and import hash read the whole file too: skip them all
+		img.Error = "not hashed or verified: file exceeds the per-file or total reading budget"
+		return img
+	}
+	e.total += st.Size()
+	hm, hs1, hs256 := md5.New(), sha1.New(), sha256.New()
+	if _, err := io.Copy(io.MultiWriter(hm, hs1, hs256), &ctxReader{ctx, f}); err != nil {
+		img.Error = "hash: " + err.Error()
 	} else {
-		e.total += st.Size()
-		hm, hs1, hs256 := md5.New(), sha1.New(), sha256.New()
-		if _, err := io.Copy(io.MultiWriter(hm, hs1, hs256), &ctxReader{ctx, f}); err != nil {
-			img.Error = "hash: " + err.Error()
-		} else {
-			img.MD5, img.SHA1, img.SHA256 = hex.EncodeToString(hm.Sum(nil)), hex.EncodeToString(hs1.Sum(nil)), hex.EncodeToString(hs256.Sum(nil))
-		}
+		img.MD5, img.SHA1, img.SHA256 = hex.EncodeToString(hm.Sum(nil)), hex.EncodeToString(hs1.Sum(nil)), hex.EncodeToString(hs256.Sum(nil))
 	}
 	img.Authenticode, img.AuthenticodeCode, img.Signer = verifySignatureDetail(path)
 	img.PESHA1, img.PESHA256 = peHashes(path)
@@ -290,7 +313,11 @@ func collectEnrichEntries(ctx context.Context, w *warnings) []enrichEntry {
 	var out []enrichEntry
 	add := func(cat, loc, entry, profile, launch string) {
 		if strings.TrimSpace(launch) != "" {
-			out = append(out, enrichEntry{Category: cat, Location: loc, Entry: entry, Profile: profile, LaunchString: launch})
+			e := enrichEntry{Category: cat, Location: loc, Entry: entry, Profile: profile, LaunchString: launch}
+			if p := resolveExecutable(expandForEntry(launch, profile)); p != "" {
+				e.imageHint = `"` + p + `"` // quoted: resolved again later, it must not be cut at a space
+			}
+			out = append(out, e)
 		}
 	}
 	// addImage records an entry whose image is not the first program of its launch string (a service DLL)
@@ -311,14 +338,19 @@ func collectEnrichEntries(ctx context.Context, w *warnings) []enrichEntry {
 		name string
 	}{{registry.WOW64_64KEY, "", "64"}, {registry.WOW64_32KEY, `WOW6432Node\`, "32"}}
 
-	// Run keys: machine (both views) and loaded users
+	// Run keys: machine (both views) and loaded users. The 32-bit view is reported under its WOW6432Node path so
+	// it can be told apart and annotated against its own key (StartupApproved\Run32); a key shared by both views
+	// returns the same values twice and is listed once.
 	for _, rk := range []string{`Software\Microsoft\Windows\CurrentVersion\Run`, `Software\Microsoft\Windows\CurrentVersion\RunOnce`, `Software\Microsoft\Windows\CurrentVersion\Policies\Explorer\Run`} {
-		for _, v := range views {
-			hk(registry.LOCAL_MACHINE, "HKLM", rk, v.v, func(loc string, vals map[string][]string) {
-				for n, ss := range vals {
-					add("logon", loc, n, "System-wide", strings.Join(ss, " "))
-				}
-			})
+		vals64 := regStrings(registry.LOCAL_MACHINE, rk, registry.WOW64_64KEY)
+		for n, ss := range vals64 {
+			add("logon", `HKLM\`+rk, n, "System-wide", strings.Join(ss, " "))
+		}
+		if vals32 := regStrings(registry.LOCAL_MACHINE, rk, registry.WOW64_32KEY); vals32 != nil && !reflect.DeepEqual(vals32, vals64) {
+			loc := `HKLM\` + wow6432Path(rk)
+			for n, ss := range vals32 {
+				add("logon", loc, n, "System-wide", strings.Join(ss, " "))
+			}
 		}
 		for _, sid := range sortedLoadedSIDs() {
 			hk(registry.USERS, "HKU", sid+`\`+rk, registry.WOW64_64KEY, func(loc string, vals map[string][]string) {
@@ -327,6 +359,16 @@ func collectEnrichEntries(ctx context.Context, w *warnings) []enrichEntry {
 				}
 			})
 		}
+	}
+	// UserInitMprLogonScript: a per-user logon script run by Winlogon (stored among the user's environment variables)
+	for _, sid := range sortedLoadedSIDs() {
+		hk(registry.USERS, "HKU", sid+`\Environment`, registry.WOW64_64KEY, func(loc string, vals map[string][]string) {
+			for _, s := range lookupValue(vals, "UserInitMprLogonScript") {
+				if strings.TrimSpace(s) != "" {
+					add("logon", loc, "UserInitMprLogonScript", sid, s)
+				}
+			}
+		})
 	}
 	// Winlogon, AppInit, LSA, KnownDLLs, codecs, print monitors
 	hk(registry.LOCAL_MACHINE, "HKLM", `SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon`, registry.WOW64_64KEY, func(loc string, vals map[string][]string) {
@@ -339,17 +381,36 @@ func collectEnrichEntries(ctx context.Context, w *warnings) []enrichEntry {
 		}
 	})
 	for _, v := range views {
-		hk(registry.LOCAL_MACHINE, "HKLM", `SOFTWARE\Microsoft\Windows NT\CurrentVersion\Windows`, v.v, func(loc string, vals map[string][]string) {
+		// each view is reported under its own key (WOW6432Node for 32-bit), and bare 32-bit names resolve in SysWOW64
+		viewLoc := func(path string) string {
+			if v.wow != "" {
+				return `HKLM\` + wow6432Path(path)
+			}
+			return `HKLM\` + path
+		}
+		sysDir := "System32"
+		if v.wow != "" {
+			sysDir = "SysWOW64"
+		}
+		const winKey = `SOFTWARE\Microsoft\Windows NT\CurrentVersion\Windows`
+		if vals := regStrings(registry.LOCAL_MACHINE, winKey, v.v); vals != nil {
+			loc := viewLoc(winKey)
 			for _, s := range lookupValue(vals, "IconServiceLib") {
-				add("logon", loc, "IconServiceLib", "System-wide", filepath.Join(win, "System32", strings.TrimSpace(s)))
+				if p := inSystemDir(win, "System32", s); p != "" {
+					add("logon", loc, "IconServiceLib", "System-wide", p)
+				}
 			}
 			for _, s := range lookupValue(vals, "AppInit_DLLs") {
 				for _, part := range strings.FieldsFunc(s, func(r rune) bool { return r == ',' || r == ' ' }) {
-					add("appinit", loc, "AppInit_DLLs", "System-wide", part)
+					if p := inSystemDir(win, sysDir, part); p != "" {
+						add("appinit", loc, "AppInit_DLLs", "System-wide", p)
+					}
 				}
 			}
-		})
-		hk(registry.LOCAL_MACHINE, "HKLM", `SOFTWARE\Microsoft\Windows NT\CurrentVersion\Drivers32`, v.v, func(loc string, vals map[string][]string) {
+		}
+		const drvKey = `SOFTWARE\Microsoft\Windows NT\CurrentVersion\Drivers32`
+		hk(registry.LOCAL_MACHINE, "HKLM", drvKey, v.v, func(_ string, vals map[string][]string) {
+			loc := viewLoc(drvKey)
 			for n, ss := range vals {
 				launch := strings.Join(ss, " ")
 				if v.wow != "" && !strings.ContainsAny(launch, `\/`) { // 32-bit view: bare names live in SysWOW64
@@ -365,10 +426,14 @@ func collectEnrichEntries(ctx context.Context, w *warnings) []enrichEntry {
 		for _, n := range []string{"Authentication Packages", "Notification Packages", "Security Packages"} {
 			for _, s := range lookupValue(vals, n) {
 				for _, part := range strings.FieldsFunc(s, func(r rune) bool { return r == ',' || r == ' ' || r == '\x00' }) {
+					part = strings.Trim(part, `"`)
+					if part == "" { // the default "Security Packages" value is an empty string ("")
+						continue
+					}
 					if !strings.Contains(part, ".") {
 						part += ".dll"
 					}
-					add("lsa", loc, n, "System-wide", filepath.Join(win, "System32", part))
+					add("lsa", loc, n, "System-wide", inSystemDir(win, "System32", part))
 				}
 			}
 		}
@@ -379,14 +444,18 @@ func collectEnrichEntries(ctx context.Context, w *warnings) []enrichEntry {
 				continue
 			}
 			for _, s := range ss {
-				add("known_dlls", loc, n, "System-wide", filepath.Join(win, "System32", s))
+				if p := inSystemDir(win, "System32", s); p != "" {
+					add("known_dlls", loc, n, "System-wide", p)
+				}
 			}
 		}
 	})
 	for _, name := range regSubKeys(registry.LOCAL_MACHINE, `SYSTEM\CurrentControlSet\Control\Print\Monitors`, registry.WOW64_64KEY) {
 		hk(registry.LOCAL_MACHINE, "HKLM", `SYSTEM\CurrentControlSet\Control\Print\Monitors\`+name, registry.WOW64_64KEY, func(loc string, vals map[string][]string) {
 			for _, s := range lookupValue(vals, "Driver") {
-				add("print_monitors", loc, name, "System-wide", filepath.Join(win, "System32", s))
+				if p := inSystemDir(win, "System32", s); p != "" {
+					add("print_monitors", loc, name, "System-wide", p)
+				}
 			}
 		})
 	}
@@ -432,9 +501,13 @@ func collectEnrichEntries(ctx context.Context, w *warnings) []enrichEntry {
 	collectStartupFolderEntries(add)
 	// Scheduled tasks: the commands in the task XML
 	tasksDir := win + `\System32\Tasks`
-	count := 0
+	count, unreadable, oversized := 0, 0, 0
 	filepath.WalkDir(extended(tasksDir), func(path string, d os.DirEntry, err error) error {
-		if err != nil || ctx.Err() != nil {
+		if ctx.Err() != nil {
+			return filepath.SkipAll
+		}
+		if err != nil {
+			unreadable++
 			return nil
 		}
 		if d.IsDir() {
@@ -444,8 +517,13 @@ func collectEnrichEntries(ctx context.Context, w *warnings) []enrichEntry {
 			w.add("scheduled task enumeration stopped after %d files", maxTaskFiles)
 			return filepath.SkipAll
 		}
+		if info, err := d.Info(); err == nil && info.Size() > 4<<20 {
+			oversized++
+			return nil
+		}
 		data, err := os.ReadFile(path)
-		if err != nil || len(data) > 4<<20 {
+		if err != nil {
+			unreadable++
 			return nil
 		}
 		rel := strings.TrimPrefix(strings.TrimPrefix(path, extended(tasksDir)), `\`)
@@ -465,7 +543,60 @@ func collectEnrichEntries(ctx context.Context, w *warnings) []enrichEntry {
 		}
 		return nil
 	})
+	if unreadable > 0 || oversized > 0 { // tasks that could not be read are a gap, not an absence of tasks
+		w.add("%d scheduled task file(s) or folder(s) could not be read (access denied without elevation?) and %d were over 4 MiB: their commands are not listed", unreadable, oversized)
+	}
+	// autostarts of users whose hive is not loaded (not logged on) are not visible in HKU
+	var unloaded []string
+	for _, up := range userProfiles() {
+		if up.SID != "" && !up.Loaded {
+			unloaded = append(unloaded, up.Name)
+		}
+	}
+	if len(unloaded) > 0 {
+		w.add("registry autostarts of %d user(s) whose hive is not loaded were not read (see hive-users for the raw NTUSER.DAT): %s", len(unloaded), strings.Join(unloaded, ", "))
+	}
 	return out
+}
+
+var envVarPattern = regexp.MustCompile(`%([^%\\/:]+)%`)
+
+// userScopedVars are environment variables whose value depends on the user: expanded with the collector's own
+// environment they would point an entry of another user (or of the machine) at the collector's profile.
+var userScopedVars = map[string]bool{"USERPROFILE": true, "APPDATA": true, "LOCALAPPDATA": true, "TEMP": true, "TMP": true,
+	"HOMEPATH": true, "HOMEDRIVE": true, "HOMESHARE": true, "USERNAME": true, "USERDOMAIN": true, "ONEDRIVE": true, "ONEDRIVECONSUMER": true, "ONEDRIVECOMMERCIAL": true}
+
+// expandForEntry expands the environment variables of a launch string in the context of its owner: for a user
+// entry (profile is a SID) the user-scoped variables point into that user's profile; for a machine entry they are
+// left as written, so the image is reported as unresolved instead of resolving into the collector's profile.
+func expandForEntry(launch, profile string) string {
+	var userVars map[string]string
+	if strings.HasPrefix(profile, "S-1-") {
+		for _, up := range userProfiles() {
+			if strings.EqualFold(up.SID, profile) {
+				p := up.Path
+				userVars = map[string]string{"USERPROFILE": p, "APPDATA": p + `\AppData\Roaming`, "LOCALAPPDATA": p + `\AppData\Local`,
+					"TEMP": p + `\AppData\Local\Temp`, "TMP": p + `\AppData\Local\Temp`, "USERNAME": up.Name}
+				if len(p) >= 2 && p[1] == ':' {
+					userVars["HOMEDRIVE"], userVars["HOMEPATH"] = p[:2], p[2:]
+				}
+				break
+			}
+		}
+	}
+	return envVarPattern.ReplaceAllStringFunc(launch, func(m string) string {
+		name := strings.ToUpper(m[1 : len(m)-1])
+		if userScopedVars[name] {
+			if v, ok := userVars[name]; ok {
+				return v
+			}
+			return m
+		}
+		if v, ok := os.LookupEnv(name); ok {
+			return v
+		}
+		return m
+	})
 }
 
 func persistenceEnriched(ctx context.Context, w *warnings) (any, error) {
@@ -534,7 +665,8 @@ func persistenceEnriched(ctx context.Context, w *warnings) (any, error) {
 		return nil, fmt.Errorf("%w: no autostart entries could be read", collector.ErrNotPresent)
 	}
 	return map[string]any{
-		"note":    "each entry links to the image it launches; hashes, Authenticode, company, description and version are read from the file on disk at collection time (not from the raw registry data kept in the other persistence sources)",
+		"note": "each entry links to the image it launches; hashes, Authenticode, company, description and version are read from the file on disk at collection time (not from the raw registry data kept in the other persistence sources). " +
+			"Authenticode verdicts do not check certificate revocation. User-scoped variables (%APPDATA%...) are resolved in the entry owner's profile; in machine entries they are left unresolved. Remote (UNC) images are recorded, never opened",
 		"entries": entries, "images": images, "entry_count": len(entries), "image_count": len(images), "images_missing": missing,
 	}, nil
 }

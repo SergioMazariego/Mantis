@@ -8,6 +8,8 @@ func TestChromiumPolicyNeverCollectsSecrets(t *testing.T) {
 		`Profile 1\Login Data For Account`, `Default\Extension Cookies`, `Default\Trust Tokens`, `Default\Affiliation Database`,
 		`Default\Sync Data\LevelDB\000003.log`, `Default\Local Storage\leveldb\x.ldb`, `Default\IndexedDB\foo`, `Default\Cache\Cache_Data\data_1`,
 		`Default\Session Storage\000003.log`, `Default\Service Worker\Database\x`,
+		// session stores keep page state with typed form values and POST bodies, like Firefox's sessionstore
+		`Default\Sessions\Session_13300000000000000`, `Default\Sessions\Tabs_13300000000000000`, `Default\Current Session`, `Default\Last Tabs`,
 	}
 	for _, rel := range never {
 		if ok, why := ChromiumAllowed(rel); ok {
@@ -16,7 +18,7 @@ func TestChromiumPolicyNeverCollectsSecrets(t *testing.T) {
 	}
 	allowed := []string{
 		`Default\History`, `Default\History-journal`, `Default\Bookmarks`, `Profile 3\Preferences`, `Default\Top Sites`,
-		`Default\Sessions\Session_13300000000000000`, `Default\Extensions\abcdefgh\1.0_0\manifest.json`, `Default\Shortcuts`,
+		`Default\Extensions\abcdefgh\1.0_0\manifest.json`, `Default\Shortcuts`,
 	}
 	for _, rel := range allowed {
 		if ok, why := ChromiumAllowed(rel); !ok {
@@ -49,8 +51,8 @@ func TestBrowserSkipDirs(t *testing.T) {
 			t.Errorf("%s should be skipped", d)
 		}
 	}
-	if SkipDir(`Default\Extensions`) || SkipDir(`Default\Sessions`) {
-		t.Error("Extensions and Sessions must be traversed")
+	if SkipDir(`Default\Extensions`) {
+		t.Error("Extensions must be traversed")
 	}
 }
 

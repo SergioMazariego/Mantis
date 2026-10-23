@@ -388,8 +388,9 @@ func rundll32Target(launch string) string {
 	return arg
 }
 
-// collectStartupFolderEntries lists the programs (not shortcuts, whose targets need the shell) placed in the
-// all-users and per-user Startup folders.
+// collectStartupFolderEntries lists every file placed in the all-users and per-user Startup folders. Shortcuts
+// (the most common form) are listed with the .lnk itself as image: their target is not resolved here, and the raw
+// .lnk files are kept by persistence-startup-folders for parsing.
 func collectStartupFolderEntries(add func(cat, loc, entry, profile, launch string)) {
 	dirs := map[string]string{expandEnv(`%ProgramData%`) + `\Microsoft\Windows\Start Menu\Programs\Startup`: "System-wide"}
 	for _, d := range perUser(`AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup`) {
@@ -403,10 +404,11 @@ func collectStartupFolderEntries(add func(cat, loc, entry, profile, launch strin
 		for _, e := range entries {
 			name := e.Name()
 			low := strings.ToLower(name)
-			if e.IsDir() || low == "desktop.ini" || strings.HasSuffix(low, ".lnk") {
+			if e.IsDir() || low == "desktop.ini" {
 				continue
 			}
-			add("logon", dir, name, profile, filepath.Join(dir, name))
+			// quoted: a path with spaces ("Start Menu") and a script extension would otherwise be cut at the space
+			add("logon", dir, name, profile, `"`+filepath.Join(dir, name)+`"`)
 		}
 	}
 }

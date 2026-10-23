@@ -4,6 +4,7 @@ package windows
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -188,10 +189,16 @@ func vssSources() []collector.Source {
 			if len(devs) == 0 {
 				return nil, fmt.Errorf("%w: no existing shadow copies", collector.ErrNotPresent)
 			}
-			if len(devs) > 6 {
-				devs = devs[len(devs)-6:] // the most recent snapshots
-			}
 			var out []collector.Source
+			if len(devs) > 6 {
+				omitted := append([]string(nil), devs[:len(devs)-6]...)
+				devs = devs[len(devs)-6:] // the most recent snapshots
+				// the older snapshots are often the ones from before the compromise: their omission is a declared gap
+				msg := fmt.Sprintf("%d older shadow copies were not read (only the 6 most recent are): %s", len(omitted), strings.Join(omitted, ", "))
+				out = append(out, collector.Source{ID: "vss-artifacts-older-snapshots-gap", Kind: "windows.collection_gap", Locator: `\Device\HarddiskVolumeShadowCopy*`,
+					Method: "snapshot-file-copy", MaxBytes: 1, Meta: collector.Meta{Name: "Older shadow copies (not read)", Category: "shadow-copies", DestPath: "shadow-copies/gaps/older-snapshots.txt"},
+					Open: func(context.Context) (io.ReadCloser, error) { return nil, errors.New(msg) }})
+			}
 			for _, d := range devs {
 				for _, rel := range vssArtifactFiles {
 					path := shadowRoot(d) + `\` + rel

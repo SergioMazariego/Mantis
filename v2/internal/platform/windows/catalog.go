@@ -80,8 +80,18 @@ func Sources() []collector.Source {
 
 // tempSources restores v1's Windows Temp acquisition with raw file copies (v1 used xcopy).
 func tempSources() []collector.Source {
-	m := baseMeta("Windows Temp folder", "Files in %SystemRoot%\\Temp: transient installers, dropped tools and staging artifacts (v1 parity, with per-file hashes)", "execution", collector.PrivUser, collector.InStdFull)
-	spec := walkSpec{Roots: staticRoots(windowsDir() + `\Temp`), MaxDepth: 6, MaxFiles: 8000, FileMax: 128 << 20}
+	m := baseMeta("Windows Temp folder", "Files in %SystemRoot%\\Temp: transient installers, dropped tools and staging artifacts (v1 parity, with per-file hashes); memory dumps are a separate sensitive source", "execution", collector.PrivUser, collector.InStdFull)
+	isDump := func(n string) bool {
+		l := strings.ToLower(n)
+		return strings.HasSuffix(l, ".dmp") || strings.HasSuffix(l, ".hdmp") || strings.HasSuffix(l, ".mdmp")
+	}
+	// a dump left in Temp (often lsass.dmp from credential theft) holds process memory: like crash dumps, it is
+	// collected only in Full and with explicit confirmation
+	dm := baseMeta("Memory dumps in Windows Temp", "*.dmp / *.hdmp / *.mdmp files in %SystemRoot%\\Temp: frequently process memory dumped by an attacker (lsass.dmp)", "execution", collector.PrivUser, collector.InFullOnly)
+	dumps := sensitiveFullOnly(walkGroup("execution-windows-temp-dumps", dm, windowsDir()+`\Temp\*.dmp`, walkSpec{
+		Roots: staticRoots(windowsDir() + `\Temp`), MaxDepth: 6, MaxFiles: 500, FileMax: 4 << 30, Match: func(_, n string) bool { return isDump(n) }}),
+		"memory dumps can contain credentials, keys and personal data")
+	spec := walkSpec{Roots: staticRoots(windowsDir() + `\Temp`), MaxDepth: 6, MaxFiles: 8000, FileMax: 128 << 20, Match: func(_, n string) bool { return !isDump(n) }}
 	// The operator may narrow Temp to the files that matter (for example executables and scripts only).
 	if f := currentOptions().TempFilter; f.Active() {
 		if f.MaxDepth > 0 {
@@ -100,7 +110,7 @@ func tempSources() []collector.Source {
 		}
 		m.Description += " [filtered: " + f.Describe() + "]"
 	}
-	return []collector.Source{walkGroup("execution-windows-temp", m, windowsDir()+`\Temp`, spec)}
+	return []collector.Source{walkGroup("execution-windows-temp", m, windowsDir()+`\Temp`, spec), dumps}
 }
 
 // annotateLegacy keeps the original v1-parity collectors (stable IDs) available for custom

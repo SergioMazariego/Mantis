@@ -35,27 +35,27 @@ func executionSources() []collector.Source {
 	out = append(out, regSnapshotSource("execution-shimcache-live",
 		em("ShimCache / AppCompatCache (live value)", "AppCompatCache raw value as currently stored. The cache is flushed to the registry at shutdown, so the live value may lag; the SYSTEM hive copy is the authoritative on-disk source",
 			collector.InAll, collector.PrivUser, "execution/shimcache.md"), `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\AppCompatCache`, func() []regTarget {
-			return []regTarget{hklm(`SYSTEM\CurrentControlSet\Control\Session Manager\AppCompatCache`, false, 0), hklm(`SYSTEM\CurrentControlSet\Control\Session Manager\AppCompatibility`, true, 2)}
+			return noRedact([]regTarget{hklm(`SYSTEM\CurrentControlSet\Control\Session Manager\AppCompatCache`, false, 0), hklm(`SYSTEM\CurrentControlSet\Control\Session Manager\AppCompatibility`, true, 2)})
 		}))
 
 	out = append(out, regSnapshotSource("execution-bam-dam",
 		em("BAM/DAM (Background/Desktop Activity Moderator)", "Per-user last execution times of executables (bam\\State\\UserSettings, dam)", collector.InAll, collector.PrivUser, "execution/bam-dam.md"),
 		`HKLM\SYSTEM\CurrentControlSet\Services\{bam,dam}`, func() []regTarget {
-			return []regTarget{hklm(`SYSTEM\CurrentControlSet\Services\bam\State\UserSettings`, true, 2), hklm(`SYSTEM\CurrentControlSet\Services\bam\UserSettings`, true, 2),
-				hklm(`SYSTEM\CurrentControlSet\Services\dam\State\UserSettings`, true, 2), hklm(`SYSTEM\CurrentControlSet\Services\dam\UserSettings`, true, 2)}
+			return noRedact([]regTarget{hklm(`SYSTEM\CurrentControlSet\Services\bam\State\UserSettings`, true, 2), hklm(`SYSTEM\CurrentControlSet\Services\bam\UserSettings`, true, 2),
+				hklm(`SYSTEM\CurrentControlSet\Services\dam\State\UserSettings`, true, 2), hklm(`SYSTEM\CurrentControlSet\Services\dam\UserSettings`, true, 2)})
 		}))
 
 	out = append(out, regSnapshotSource("execution-userassist",
 		em("UserAssist (all loaded users)", "GUI program launch counts and last-run times, ROT13-encoded names preserved raw, for every loaded user hive", collector.InAll, collector.PrivUser),
 		`HKU\<SID>\Software\Microsoft\Windows\CurrentVersion\Explorer\UserAssist`, func() []regTarget {
-			return perLoadedUser(`Software\Microsoft\Windows\CurrentVersion\Explorer\UserAssist`, true, 3)
+			return noRedact(perLoadedUser(`Software\Microsoft\Windows\CurrentVersion\Explorer\UserAssist`, true, 3))
 		}))
 
 	out = append(out, regSnapshotSource("execution-compat-assistant",
 		em("Program Compatibility Assistant and AppCompatFlags (registry)", "Compatibility Assistant Store/Persisted (executed programs), layers and flags for the machine and loaded users", collector.InStdFull, collector.PrivUser,
 			"execution/program-compatibility-assistant.md"), `...\AppCompatFlags`, func() []regTarget {
 			t := []regTarget{hklm(`SOFTWARE\Microsoft\Windows NT\CurrentVersion\AppCompatFlags`, true, 4), hklm(`SOFTWARE\WOW6432Node\Microsoft\Windows NT\CurrentVersion\AppCompatFlags`, true, 4)}
-			return append(t, perLoadedUser(`Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags`, true, 4)...)
+			return noRedact(append(t, perLoadedUser(`Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags`, true, 4)...))
 		}))
 
 	out = append(out, walkGroup("execution-pca-files",

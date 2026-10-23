@@ -40,9 +40,12 @@ func persistenceSources() []collector.Source {
 				`Software\Microsoft\Windows NT\CurrentVersion\Windows`, `Software\Microsoft\Command Processor`} {
 				t = append(t, perLoadedUser(k, true, 2)...)
 			}
-			// user environment variables often carry tokens set with setx: names, types and sizes only
+			t = noRedact(t) // Run value names are attacker-chosen: the command is the evidence
+			// user environment variables often carry tokens set with setx: names, types and sizes only, except
+			// UserInitMprLogonScript, a logon script that is persistence (its command is the evidence)
 			for _, et := range perLoadedUser("Environment", false, 0) {
 				et.NamesOnly = true
+				et.KeepData = []string{"UserInitMprLogonScript"}
 				t = append(t, et)
 			}
 			return t
@@ -58,7 +61,14 @@ func persistenceSources() []collector.Source {
 				`SOFTWARE\Microsoft\Command Processor`, `SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System`} {
 				t = append(t, both(k, true, 2)...)
 			}
-			for _, k := range []string{`SYSTEM\CurrentControlSet\Control\Session Manager`, `SYSTEM\CurrentControlSet\Control\Lsa`, `SYSTEM\CurrentControlSet\Control\SecurityProviders`,
+			// machine environment variables can hold secrets set with setx /M (API keys, tokens): names, types and sizes
+			// only, except the variables that decide where programs are found (search-order hijacking evidence)
+			sm := hklm(`SYSTEM\CurrentControlSet\Control\Session Manager`, true, 2)
+			sm.Include = func(p string) bool { return !strings.Contains(strings.ToLower(p), `\session manager\environment`) }
+			env := hklm(`SYSTEM\CurrentControlSet\Control\Session Manager\Environment`, false, 0)
+			env.NamesOnly, env.KeepData = true, []string{"Path", "PATHEXT", "ComSpec", "windir", "TEMP", "TMP", "PSModulePath", "OS"}
+			t = append(t, sm, env)
+			for _, k := range []string{`SYSTEM\CurrentControlSet\Control\Lsa`, `SYSTEM\CurrentControlSet\Control\SecurityProviders`,
 				`SYSTEM\CurrentControlSet\Control\NetworkProvider\Order`, `SYSTEM\CurrentControlSet\Control\NetworkProvider\HwOrder`,
 				`SYSTEM\CurrentControlSet\Control\Print\Monitors`, `SYSTEM\CurrentControlSet\Control\Print\Providers`,
 				`SYSTEM\CurrentControlSet\Services\W32Time\TimeProviders`, `SYSTEM\CurrentControlSet\Control\Terminal Server\Wds`,

@@ -123,12 +123,22 @@ func (r *Runner) RunObserved(ctx context.Context, scope casecore.Scope, plan Pla
 	}
 	requested := plan.Sources
 	plan.Sources = nil
-	seenIDs := map[string]bool{}
+	seenIDs := map[string]string{} // ID -> locator
 	appendUnique := func(src Source) {
-		if seenIDs[src.ID] { // overlapping groups may yield the same item; acquire it once
-			return
+		if loc, ok := seenIDs[src.ID]; ok {
+			if loc == src.Locator { // overlapping groups may yield the same item; acquire it once
+				return
+			}
+			// a different item with the same ID (a hash collision of its suffix): keep it under a distinct ID
+			base := src.ID
+			for n := 2; ; n++ {
+				src.ID = fmt.Sprintf("%s-%d", base, n)
+				if _, taken := seenIDs[src.ID]; !taken {
+					break
+				}
+			}
 		}
-		seenIDs[src.ID] = true
+		seenIDs[src.ID] = src.Locator
 		if src.MaxBytes > plan.MaxTotalBytes {
 			src.MaxBytes = plan.MaxTotalBytes
 		}
@@ -149,7 +159,8 @@ func (r *Runner) RunObserved(ctx context.Context, scope casecore.Scope, plan Pla
 			continue
 		}
 		overflow := false
-		if room := maxPlanSources - len(plan.Sources); len(children) > room {
+		// one slot stays free for the gap item that declares the overflow, so the plan never exceeds its limit
+		if room := maxPlanSources - len(plan.Sources) - 1; len(children) > room {
 			if room < 0 {
 				room = 0
 			}
@@ -189,6 +200,11 @@ func (r *Runner) RunObserved(ctx context.Context, scope casecore.Scope, plan Pla
 	results := make([]ItemResult, 0, len(plan.Sources))
 	for i, src := range plan.Sources {
 		if err := ctx.Err(); err != nil {
+			// every planned source that did not start is still reported (as cancelled), never silently omitted
+			for _, rest := range plan.Sources[i:] {
+				results = append(results, ItemResult{SourceID: rest.ID, Err: err, Meta: rest.Meta, Kind: rest.Kind,
+					Locator: rest.Locator, Method: rest.Method, AcquiredAt: time.Now().UTC()})
+			}
 			return results, err
 		}
 		started := time.Now()
@@ -225,10 +241,13 @@ func (r *Runner) RunObserved(ctx context.Context, scope casecore.Scope, plan Pla
 			notes = n.AcquisitionNotes()
 		}
 		closeErr := reader.Close()
-		if tracked.count > limit {
+		// The budget counts what was stored. A source that ran past the limit only exhausts the whole budget
+		// when that limit was the remaining budget; past its own per-source limit it just fails (ErrTooLarge).
+		switch {
+		case tracked.count > limit && limit == remaining:
 			remaining = 0
-		} else {
-			remaining -= tracked.count
+		case result.Ready:
+			remaining -= result.Blob.SizeBytes
 		}
 		// a failed Open reaches the ingest and Close paths again through errorReadCloser: report it once
 		if openErr != nil {
@@ -299,6 +318,9 @@ func inheritMeta(parent, child Meta) Meta {
 	}
 	if len(child.ActionTypes) == 0 {
 		child.ActionTypes = parent.ActionTypes
+	}
+	if child.DataVersion == 0 {
+		child.DataVersion = parent.DataVersion
 	}
 	child.Sensitive = child.Sensitive || parent.Sensitive
 	return child

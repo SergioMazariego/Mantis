@@ -69,6 +69,14 @@ func isLocalSID(sid string) bool {
 	return strings.HasPrefix(sid, "S-1-5-") || strings.HasPrefix(sid, "S-1-1-") || strings.HasPrefix(sid, "S-1-2-")
 }
 
+// accountExpiry renders USER_INFO acct_expires: TIMEQ_FOREVER (0xFFFFFFFF) means the account never expires.
+func accountExpiry(sec uint32) string {
+	if sec == 0xFFFFFFFF {
+		return "never"
+	}
+	return epoch(sec)
+}
+
 func epoch(sec uint32) string {
 	if sec == 0 {
 		return ""
@@ -113,7 +121,7 @@ func accountInventory(w *warnings) map[string]any {
 		users = append(users, map[string]any{
 			"name": windows.UTF16PtrToString(u.Name), "full_name": windows.UTF16PtrToString(u.FullName), "comment": windows.UTF16PtrToString(u.Comment),
 			"flags": u.Flags, "disabled": u.Flags&0x2 != 0, "locked_out": u.Flags&0x10 != 0, "password_age_seconds": u.PasswordAge, "privilege": u.Priv,
-			"last_logon_utc": epoch(u.LastLogon), "last_logoff_utc": epoch(u.LastLogoff), "account_expires_utc": epoch(u.AcctExpires),
+			"last_logon_utc": epoch(u.LastLogon), "last_logoff_utc": epoch(u.LastLogoff), "account_expires_utc": accountExpiry(u.AcctExpires),
 			"bad_password_count": u.BadPwCount, "logon_count": u.NumLogons, "home_dir": windows.UTF16PtrToString(u.HomeDir), "script_path": windows.UTF16PtrToString(u.ScriptPath),
 		})
 	})
@@ -308,7 +316,7 @@ func logonSessions(w *warnings) []map[string]any {
 		out = append(out, map[string]any{
 			"logon_id": fmt.Sprintf("0x%x", uint64(luid.HighPart)<<32|uint64(luid.LowPart)), "user": d.UserName.String(), "domain": d.LogonDomain.String(),
 			"auth_package": d.AuthPackage.String(), "logon_type": logonTypes[d.LogonType], "logon_type_code": d.LogonType, "session_id": d.Session, "sid": sid,
-			"logon_time_utc": time.Unix(0, (d.LogonTime-116444736000000000)*100).UTC().Format(time.RFC3339Nano), "logon_server": d.LogonServer.String(),
+			"logon_time_utc": filetimeUTC(uint64(d.LogonTime)), "logon_server": d.LogonServer.String(),
 			"dns_domain": d.DNSDomain.String(), "upn": d.UPN.String(),
 		})
 		pLsaFreeReturnBuffer.Call(data)

@@ -170,7 +170,30 @@ func processArchitecture(h windows.Handle) (arch string, wow64 bool) {
 	if proc != 0 {
 		return peMachineName(proc) + " (WOW64/emulated)", true
 	}
+	// x64 code on ARM64 is emulated without WOW64, so IsWow64Process2 reports nothing: ask for the process machine
+	if m, ok := processMachine(h); ok && m != native {
+		return peMachineName(m) + " (emulated)", false
+	}
 	return peMachineName(native), false
+}
+
+var pGetProcessInformation = kernel32.NewProc("GetProcessInformation")
+
+// processMachine reads PROCESS_MACHINE_INFORMATION (Windows 11 and later); ok is false where it is unavailable.
+func processMachine(h windows.Handle) (uint16, bool) {
+	if pGetProcessInformation.Find() != nil {
+		return 0, false
+	}
+	const processMachineTypeInfo = 9
+	var info struct {
+		Machine    uint16
+		Reserved   uint16
+		Attributes uint32
+	}
+	if r, _, _ := pGetProcessInformation.Call(uintptr(h), processMachineTypeInfo, uintptr(unsafe.Pointer(&info)), unsafe.Sizeof(info)); r == 0 || info.Machine == 0 {
+		return 0, false
+	}
+	return info.Machine, true
 }
 
 // ---- PEB ----
@@ -306,9 +329,34 @@ func readEnvironmentBlock(h windows.Handle, addr uint64) []byte {
 	return out
 }
 
-func samePath(a, b string) bool {
-	norm := func(s string) string { return strings.ToLower(strings.TrimPrefix(s, `\\?\`)) }
-	return norm(a) == norm(b)
+// samePath compares the image path recorded in the PEB with the one the kernel reports. Both are brought to one
+// spelling first (\SystemRoot, \??\ and \\?\ prefixes, 8.3 short names); ok is false when the PEB path is not a
+// drive path after that (nothing can be concluded, so no mismatch is claimed).
+func samePath(peb, kernel string) (same, ok bool) {
+	norm := func(s string) string {
+		s = strings.TrimSpace(s)
+		l := strings.ToLower(s)
+		switch {
+		case strings.HasPrefix(l, `\\?\`), strings.HasPrefix(l, `\??\`):
+			s = s[4:]
+		case strings.HasPrefix(l, `\systemroot\`):
+			s = windowsDir() + s[len(`\systemroot`):]
+		}
+		if strings.Contains(s, "~") {
+			s = normalizeModulePath(s)
+		}
+		return strings.ToLower(s)
+	}
+	p, k := norm(peb), norm(kernel)
+	if len(p) < 3 || p[1] != ':' || len(k) < 3 || k[1] != ':' {
+		return false, false
+	}
+	return p == k, true
+}
+
+// isCredentialProcess names the processes whose memory holds credentials (LSA and its isolated counterpart).
+func isCredentialProcess(name string) bool {
+	return strings.EqualFold(name, "lsass.exe") || strings.EqualFold(name, "lsaiso.exe")
 }
 
 // ---- parent validity ----
@@ -330,7 +378,10 @@ func resolveParents(procs []procRecord) {
 		switch {
 		case par == nil:
 			p.ParentState = "exited"
-		case par.CreatedUTC != "" && p.CreatedUTC != "" && parse(par.CreatedUTC).After(parse(p.CreatedUTC)):
+		case par.CreatedUTC == "" || p.CreatedUTC == "":
+			// without both creation times the parent cannot be told apart from a newer process that took the PID
+			p.ParentState = "unverified"
+		case parse(par.CreatedUTC).After(parse(p.CreatedUTC)):
 			p.ParentState = "pid-reused"
 		default:
 			p.ParentState = "running"

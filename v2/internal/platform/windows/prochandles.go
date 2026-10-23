@@ -333,6 +333,10 @@ func processHandleDetail(ctx context.Context, w *warnings) (any, error) {
 		if _, bad := failed[pid]; bad {
 			return 0
 		}
+		if isCredentialProcess(names[pid]) { // handles owned by lsass/lsaiso are never duplicated
+			failed[pid] = "not opened: credential process"
+			return 0
+		}
 		h, err := windows.OpenProcess(windows.PROCESS_DUP_HANDLE, false, pid)
 		if err != nil {
 			failed[pid] = err.Error()

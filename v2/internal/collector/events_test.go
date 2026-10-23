@@ -98,7 +98,30 @@ func TestRunObservedStopsOnCancellation(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("want context.Canceled, got %v", err)
 	}
-	if finished != 1 || len(results) != 1 || !results[0].Result.Ready {
-		t.Fatalf("first source must be preserved and later ones skipped: finished=%d results=%+v", finished, results)
+	if finished != 1 || len(results) != 3 || !results[0].Result.Ready {
+		t.Fatalf("first source must be preserved and the others still reported: finished=%d results=%+v", finished, results)
+	}
+	// sources that never started are reported as cancelled, never silently dropped from the manifest
+	for _, r := range results[1:] {
+		if r.Classify() != DispCancelled || r.Result.Ready || r.Locator == "" {
+			t.Errorf("unstarted source %s must be reported as cancelled: %+v", r.SourceID, r)
+		}
+	}
+}
+
+func TestPerSourceLimitDoesNotExhaustTheWholeBudget(t *testing.T) {
+	runner, scope := newObservedRunner(t)
+	big := fixtureSource("big", "0123456789")
+	big.MaxBytes = 4 // fails on its own limit, far below the plan budget
+	plan := Plan{ID: "plan-budget", AssetID: "host", Profile: "fixture", MaxTotalBytes: 1 << 20, Sources: []Source{big, fixtureSource("after", "22")}}
+	results, err := runner.RunObserved(context.Background(), scope, plan, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 2 || results[0].Result.Ready {
+		t.Fatalf("the oversized source must fail: %+v", results)
+	}
+	if !results[1].Result.Ready || errors.Is(results[1].Err, ErrTotalBudgetExceeded) {
+		t.Fatalf("a source after one that exceeded its own limit must still be collected: %+v", results[1])
 	}
 }

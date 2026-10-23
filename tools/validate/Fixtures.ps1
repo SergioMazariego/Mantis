@@ -20,6 +20,13 @@ if ($Remove) {
   Remove-Item (Join-Path ([Environment]::GetFolderPath('Startup')) "$marker.cmd") -Force -ErrorAction SilentlyContinue
   Get-Process ping -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like "*$marker*" } | Stop-Process -Force -ErrorAction SilentlyContinue
   net user "${marker}User" /delete 2>$null | Out-Null
+  Remove-ItemProperty 'HKCU:\Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Compatibility Assistant\Store' -Name "C:\$marker\tokenizer.exe" -ErrorAction SilentlyContinue
+  Remove-ItemProperty 'HKCU:\Environment' -Name 'UserInitMprLogonScript' -ErrorAction SilentlyContinue
+  Remove-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name "${marker}Unc" -ErrorAction SilentlyContinue
+  Remove-ItemProperty 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Run' -Name "${marker}32" -ErrorAction SilentlyContinue
+  Remove-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder' -Name "$marker.cmd" -ErrorAction SilentlyContinue
+  $hosts = "$env:SystemRoot\System32\drivers\etc\hosts"
+  (Get-Content $hosts) | Where-Object { $_ -notmatch 'mantis-fixture\.test' } | Set-Content $hosts
   $pidFile = Join-Path $env:TEMP "$marker.listener.pid"
   if (Test-Path $pidFile) { Stop-Process -Id ([int](Get-Content $pidFile)) -Force -ErrorAction SilentlyContinue; Remove-Item $pidFile -Force }
   Write-Host 'fixtures removed'; $global:LASTEXITCODE = 0; return
@@ -83,6 +90,28 @@ foreach ($root in "$env:LOCALAPPDATA\Google\Chrome\User Data", "$env:LOCALAPPDAT
   Write-Host "browser profile root ${root}: $names"
 }
 Start-Sleep -Seconds 2
+
+# 9c. cases that once lost evidence (each is checked in Verify.ps1)
+#  - an execution value whose name (a path) contains "token": its data must not be redacted
+$store = 'HKCU:\Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Compatibility Assistant\Store'
+New-Item $store -Force | Out-Null
+New-ItemProperty $store -Name "C:\$marker\tokenizer.exe" -PropertyType Binary -Value ([byte[]](0x53, 0x41, 0x43, 0x50, 1, 0, 0, 0)) -Force | Out-Null
+#  - an autostart pointing at a UNC path: it must be recorded and never opened (no SMB/NTLM to that host)
+Set-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name "${marker}Unc" -Value "\\mantis-fixture.invalid\share\${marker}.exe"
+#  - a logon script stored among the user's environment variables
+Set-ItemProperty 'HKCU:\Environment' -Name 'UserInitMprLogonScript' -Value "C:\Windows\System32\notepad.exe /${marker}LogonScript"
+#  - a 32-bit Run entry (WOW6432Node view)
+New-Item 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Run' -Force | Out-Null
+Set-ItemProperty 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Run' -Name "${marker}32" -Value "C:\Windows\SysWOW64\notepad.exe /${marker}32"
+#  - the Startup folder entry switched off in Task Manager (StartupApproved first byte 03 = disabled)
+$approved = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder'
+New-Item $approved -Force | Out-Null
+New-ItemProperty $approved -Name "$marker.cmd" -PropertyType Binary -Value ([byte[]](3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)) -Force | Out-Null
+#  - a name in the DNS client cache with a known answer (hosts entries are loaded into the cache)
+$hosts = "$env:SystemRoot\System32\drivers\etc\hosts"
+if (-not (Select-String -Path $hosts -Pattern 'mantis-fixture\.test' -Quiet)) { Add-Content -Path $hosts -Value "127.0.0.42 mantis-fixture.test" }
+Clear-DnsClientCache -ErrorAction SilentlyContinue
+$null = Resolve-DnsName mantis-fixture.test -ErrorAction SilentlyContinue
 
 # 10. a running process with a recognizable command line and a TCP listener
 Start-Process -FilePath ping.exe -ArgumentList '-t', '127.0.0.1', "-l", '32' -WindowStyle Hidden

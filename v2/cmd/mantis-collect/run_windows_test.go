@@ -27,7 +27,7 @@ func TestClassifyNeverReportsUnpublishedArtifactsAsCollected(t *testing.T) {
 		{"error beats ready flag", collector.ItemResult{SourceID: "c", Result: ready.Result, Err: errors.New("boom")}, stFailed},
 		{"cancelled", collector.ItemResult{SourceID: "d", Err: context.Canceled}, stCancelled},
 		{"empty group is skipped", collector.ItemResult{SourceID: "e", Err: collector.ErrNoSources}, stSkipped},
-		{"budget exhausted is skipped", collector.ItemResult{SourceID: "f", Err: collector.ErrTotalBudgetExceeded}, stSkipped},
+		{"budget exhausted is not collected", collector.ItemResult{SourceID: "f", Err: collector.ErrTotalBudgetExceeded}, stFailed},
 		{"access denied is an error", collector.ItemResult{SourceID: "g", Err: windows.ERROR_ACCESS_DENIED}, stFailed},
 	}
 	for _, tc := range cases {

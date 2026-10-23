@@ -67,6 +67,8 @@ type regTarget struct {
 	View      uint32
 	NameOnly  []string               // when set, only these value names are recorded
 	NamesOnly bool                   // record value names, types and sizes but not their data
+	KeepData  []string               // with NamesOnly: values whose data is evidence and is kept (e.g. UserInitMprLogonScript)
+	NoRedact  bool                   // value names here are chosen by programs or attackers (Run, BAM): never redact by name
 	Include   func(path string) bool // when set, only keys whose path satisfies it are recorded (subkeys are still traversed)
 }
 
@@ -180,7 +182,7 @@ func dumpTargetCtx(ctx context.Context, t regTarget, w *warnings, out *[]regKeyD
 			if len(t.NameOnly) > 0 && !containsFold(t.NameOnly, n) {
 				continue
 			}
-			if t.NamesOnly || sensitiveValueName(n) {
+			if (t.NamesOnly && !containsFold(t.KeepData, n)) || (!t.NoRedact && sensitiveValueName(n)) {
 				size, vt, err := k.GetValue(n, nil)
 				if err != nil {
 					w.add("%s: value %q: %v", kd.Path, n, err)
@@ -234,7 +236,13 @@ func dumpTargetCtx(ctx context.Context, t regTarget, w *warnings, out *[]regKeyD
 // sensitiveValueName flags registry value names that commonly hold reusable secrets (for example the
 // plaintext DefaultPassword of an AutoAdminLogon setup). Their data is not written to the package;
 // name, type and size are kept so the presence of the secret is still evidence.
+// A value name that is a path (BAM/DAM, AppCompatFlags, MUICache store one value per executable path, with
+// the execution time or flags as data) is never the name of a secret: redacting it would erase execution
+// evidence for any program whose path happens to contain one of the words.
 func sensitiveValueName(name string) bool {
+	if strings.ContainsAny(name, `\/:`) {
+		return false
+	}
 	l := strings.ToLower(name)
 	return strings.Contains(l, "password") || strings.Contains(l, "secret") || strings.Contains(l, "token") || strings.Contains(l, "credential")
 }
@@ -344,8 +352,9 @@ func hiveSource(id string, m collector.Meta, path string, rootHandle uintptr, su
 
 type tempFileReader struct {
 	*os.File
-	path  string
-	notes map[string]string
+	path   string
+	notes  map[string]string
+	method string // acquisition method recorded in the manifest; RegSaveKeyEx when empty
 }
 
 func (t *tempFileReader) Close() error {
@@ -353,7 +362,12 @@ func (t *tempFileReader) Close() error {
 	os.Remove(t.path)
 	return err
 }
-func (t *tempFileReader) AcquisitionMethod() string           { return "regsavekeyex" }
+func (t *tempFileReader) AcquisitionMethod() string {
+	if t.method != "" {
+		return t.method
+	}
+	return "regsavekeyex"
+}
 func (t *tempFileReader) AcquisitionNotes() map[string]string { return t.notes }
 
 // regSaveKey exports a live hive with the documented RegSaveKeyEx API into the
@@ -433,19 +447,33 @@ func registrySources() []collector.Source {
 		}
 		out = append(out, src)
 	}
+	isHiveLog := func(n string) bool {
+		n = strings.ToLower(n)
+		return strings.Contains(n, ".log") || strings.HasSuffix(n, ".blf") || strings.HasSuffix(n, ".regtrans-ms")
+	}
 	logs := mach
 	logs.Name = "Machine hive transaction logs and registry transaction files"
 	logs.Profiles = collector.InStdFull
 	out = append(out, requiresAdmin(walkGroup("hive-logs", logs, cfg+`\*.LOG*`, walkSpec{
 		Roots: staticRoots(cfg), MaxDepth: -1, FileMax: 1 << 30,
-		Match: func(_, name string) bool {
-			n := strings.ToLower(name)
-			return strings.Contains(n, ".log") || strings.HasSuffix(n, ".blf") || strings.HasSuffix(n, ".regtrans-ms")
-		}})))
+		Match: func(_, name string) bool { return isHiveLog(name) && !isSecretHiveFile(name) }})))
 	txr := mach
 	txr.Name = "Registry transaction (TxR) and RegBack files"
 	out = append(out, requiresAdmin(walkGroup("hive-txr-regback", txr, cfg+`\TxR | RegBack`, walkSpec{
-		Roots: staticRoots(cfg+`\TxR`, cfg+`\RegBack`), MaxFiles: 200, FileMax: 1 << 30})))
+		Roots: staticRoots(cfg+`\TxR`, cfg+`\RegBack`), MaxFiles: 200, FileMax: 1 << 30,
+		Match: func(_, name string) bool { return !isSecretHiveFile(name) }})))
+	// The transaction logs and RegBack copies of SAM and SECURITY hold the same secrets as the hives themselves
+	// (password hashes, LSA secrets), so they follow the hives: Full only and with explicit confirmation.
+	secret := mach
+	secret.Name = "SAM and SECURITY transaction logs and RegBack copies"
+	secret.Description = "Transaction logs (.LOG1/.LOG2) and RegBack copies of the SAM and SECURITY hives: unapplied changes and older versions of local accounts and LSA secrets"
+	out = append(out, sensitiveFullOnly(requiresAdmin(walkGroup("hive-secret-logs", secret, cfg+`\SAM* | SECURITY* | RegBack\SAM* | RegBack\SECURITY*`, walkSpec{
+		Roots: staticRoots(cfg, cfg+`\RegBack`), MaxDepth: -1, FileMax: 1 << 30,
+		Match: func(_, name string) bool { return isSecretHiveFile(name) },
+		// in config itself only the logs (the hives are hive-sam and hive-security); in RegBack the copies as well
+		Filter: func(path string, _ os.FileInfo) bool {
+			return isHiveLog(filepath.Base(path)) || strings.Contains(strings.ToLower(path), `\regback\`)
+		}})), "contains local password hashes and LSA secrets; collect only with explicit authorization"))
 	svc := mach
 	svc.Name = "Service account profiles (LocalService, NetworkService, systemprofile)"
 	out = append(out, requiresAdmin(walkGroup("hive-service-profiles", svc, windowsDir()+`\ServiceProfiles | System32\config\systemprofile`, walkSpec{
@@ -457,6 +485,22 @@ func registrySources() []collector.Source {
 		"registry", collector.PrivAdmin, collector.InStdFull, "user-activity/wordwheelquery.md", "file-activity/trustrecords-registry-key.md", "network/terminal-server-client-keys.md", "execution/bam-dam.md")
 	out = append(out, requiresAdmin(userHiveGroup("hive-users", userMeta)))
 	return out
+}
+
+// noRedact marks targets whose value names are evidence chosen by programs or attackers (a Run value called
+// "WindowsTokenBroker" must keep its command): their data is never hidden by the name-based redaction.
+func noRedact(ts []regTarget) []regTarget {
+	for i := range ts {
+		ts[i].NoRedact = true
+	}
+	return ts
+}
+
+// isSecretHiveFile reports files that belong to the SAM or SECURITY hive (the hive, its logs, its RegBack copy).
+func isSecretHiveFile(name string) bool {
+	n := strings.ToLower(name)
+	return n == "sam" || n == "security" || strings.HasPrefix(n, "sam.") || strings.HasPrefix(n, "security.") ||
+		strings.HasPrefix(n, "sam{") || strings.HasPrefix(n, "security{")
 }
 
 func userHiveGroup(id string, m collector.Meta) collector.Source {

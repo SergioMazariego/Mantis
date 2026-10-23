@@ -29,13 +29,14 @@ func TestResolveParentsFlagsExitedAndReusedPIDs(t *testing.T) {
 		{PID: 300, ParentPID: 999, Name: "orphan.exe", CreatedUTC: "2026-10-01T10:06:00Z"},
 		{PID: 400, ParentPID: 500, Name: "victim.exe", CreatedUTC: "2026-10-01T10:07:00Z"},
 		{PID: 500, ParentPID: 100, Name: "newer.exe", CreatedUTC: "2026-10-01T11:00:00Z"}, // took PID 500 after the child was created
+		{PID: 600, ParentPID: 100, Name: "noclock.exe"},                                   // creation time unknown
 	}
 	resolveParents(procs)
 	got := map[uint32][2]string{}
 	for _, p := range procs {
 		got[p.PID] = [2]string{p.ParentState, p.ParentName}
 	}
-	want := map[uint32][2]string{100: {"", ""}, 200: {"running", "root.exe"}, 300: {"exited", ""}, 400: {"pid-reused", ""}, 500: {"running", "root.exe"}}
+	want := map[uint32][2]string{100: {"", ""}, 200: {"running", "root.exe"}, 300: {"exited", ""}, 400: {"pid-reused", ""}, 500: {"running", "root.exe"}, 600: {"unverified", ""}}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("parent resolution wrong:\n got %v\nwant %v", got, want)
 	}
@@ -67,8 +68,17 @@ func TestSplitEnvironmentReadsDoubleNulTerminatedBlock(t *testing.T) {
 }
 
 func TestSamePathIgnoresCaseAndExtendedPrefix(t *testing.T) {
-	if !samePath(`\\?\C:\Windows\System32\cmd.exe`, `c:\windows\system32\CMD.EXE`) || samePath(`C:\a.exe`, `C:\b.exe`) {
-		t.Error("path comparison wrong")
+	if same, ok := samePath(`\\?\C:\Windows\System32\cmd.exe`, `c:\windows\system32\CMD.EXE`); !same || !ok {
+		t.Error("extended prefix and case must not make a difference")
+	}
+	if same, ok := samePath(`C:\a.exe`, `C:\b.exe`); same || !ok {
+		t.Error("different files must not match")
+	}
+	if same, ok := samePath(`\SystemRoot\System32\smss.exe`, windowsDir()+`\System32\smss.exe`); !same || !ok {
+		t.Error(`\SystemRoot paths (smss.exe) must not read as a mismatch`)
+	}
+	if _, ok := samePath(`relative\x.exe`, `C:\x.exe`); ok {
+		t.Error("a PEB path that is not a drive path is inconclusive")
 	}
 }
 

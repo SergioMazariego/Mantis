@@ -17,7 +17,9 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/SergioMazariego/Mantis/v2/internal/collector"
 )
@@ -44,6 +46,7 @@ type Options struct {
 	Items        []collector.ItemResult
 	GlobalNotes  []string // run-level warnings (not elevated, skipped sources, limits)
 	SelectedOnly bool     // true when the operator chose a subset (always recorded)
+	CSV          bool     // also write csv/ views derived from the JSON snapshots (for analysts without a viewer)
 
 	// Open returns a verified reader for a stored blob by SHA-256.
 	Open func(ctx context.Context, sha256hex string) (io.ReadCloser, error)
@@ -58,6 +61,7 @@ type Artifact struct {
 	Category    string            `json:"category"`
 	SourceType  string            `json:"source_type,omitempty"`
 	ActionTypes []string          `json:"action_types,omitempty"`
+	DataVersion int               `json:"data_version,omitempty"` // structure version of a JSON snapshot's data
 	SourcePath  string            `json:"source_path,omitempty"`
 	Destination string            `json:"destination,omitempty"`
 	AcquiredUTC string            `json:"acquired_utc,omitempty"`
@@ -97,6 +101,7 @@ type manifest struct {
 	FinishedUTC string            `json:"finished_utc"`
 	Hashing     string            `json:"hash_algorithm"`
 	Artifacts   []Artifact        `json:"artifacts"`
+	Derived     []Derived         `json:"derived,omitempty"` // files computed from artifacts (CSV views); not evidence
 }
 
 // Write exports the package and verifies it. A non-nil Summary is returned even
@@ -122,7 +127,7 @@ func Write(ctx context.Context, o Options) (*Summary, error) {
 			ID: it.SourceID, Collector: it.SourceID, Name: it.Meta.Name, Category: orDefault(it.Meta.Category, "other"),
 			SourceType: it.Meta.SourceType, SourcePath: orDefault(it.Meta.SourcePath, it.Locator), Method: it.Method,
 			Status: string(disp), Privilege: string(it.Meta.Privilege), Windows: it.Meta.Windows,
-			SideEffects: it.Meta.SideEffects, Coverage: it.Meta.Artifacts, ActionTypes: it.Meta.ActionTypes, Notes: it.Notes,
+			SideEffects: it.Meta.SideEffects, Coverage: it.Meta.Artifacts, ActionTypes: it.Meta.ActionTypes, DataVersion: it.Meta.DataVersion, Notes: it.Notes,
 		}
 		if !it.AcquiredAt.IsZero() {
 			art.AcquiredUTC = it.AcquiredAt.UTC().Format(time.RFC3339Nano)
@@ -158,15 +163,27 @@ func Write(ctx context.Context, o Options) (*Summary, error) {
 		return artifacts[i].ID < artifacts[j].ID
 	})
 
+	var derived []Derived
+	if o.CSV {
+		d, err := writeCSVViews(ctx, o.Dir, artifacts)
+		derived = d
+		if err != nil { // the evidence is complete without the views: record the problem, keep the package
+			o.GlobalNotes = append(o.GlobalNotes, "CSV views incomplete: "+err.Error())
+		}
+		if len(derived) > 0 {
+			o.GlobalNotes = append(o.GlobalNotes, fmt.Sprintf("%d CSV views were derived from the JSON snapshots into csv/; they are a convenience, not evidence (see derived in manifest.json)", len(derived)))
+		}
+	}
+
 	tool := map[string]string{"name": "mantis-collect", "version": o.ToolVersion}
 	man := manifest{Schema: ManifestSchema, Tool: tool, CaseID: o.CaseID, TenantID: o.TenantID, HostID: o.HostID, Host: o.Host,
 		Profile: o.Profile, Privilege: o.Privilege, StartedUTC: o.StartedAt.UTC().Format(time.RFC3339Nano),
-		FinishedUTC: o.FinishedAt.UTC().Format(time.RFC3339Nano), Hashing: "SHA-256", Artifacts: artifacts}
+		FinishedUTC: o.FinishedAt.UTC().Format(time.RFC3339Nano), Hashing: "SHA-256", Artifacts: artifacts, Derived: derived}
 	report := map[string]any{
 		"schema": ReportSchema, "case_id": o.CaseID, "host_id": o.HostID, "profile": o.Profile, "privilege": o.Privilege,
 		"started_utc": man.StartedUTC, "finished_utc": man.FinishedUTC,
 		"duration_seconds":         o.FinishedAt.Sub(o.StartedAt).Seconds(),
-		"totals":                   map[string]any{"artifacts": len(artifacts), "files": sum.Files, "bytes": sum.Bytes, "by_status": sum.ByStatus, "by_category": sum.ByCategory},
+		"totals":                   map[string]any{"artifacts": len(artifacts), "files": sum.Files, "bytes": sum.Bytes, "by_status": sum.ByStatus, "by_category": sum.ByCategory, "derived_files": len(derived)},
 		"operator_selected_subset": o.SelectedOnly,
 		"notes":                    o.GlobalNotes,
 		"statement": "This package contains only the sources listed in manifest.json. Every source is reported with its own status; " +
@@ -189,6 +206,7 @@ func Write(ctx context.Context, o Options) (*Summary, error) {
 		return sum, err
 	}
 	sum.VerifyErrors = verify(ctx, o.Dir, checks)
+	sum.VerifyErrors = append(sum.VerifyErrors, crossCheck(checks, artifacts, derived)...)
 	sum.Verified = len(sum.VerifyErrors) == 0
 	ver := map[string]any{"schema": "mantis.package-verification/1", "verified_utc": time.Now().UTC().Format(time.RFC3339Nano),
 		"files_checked": len(checks), "ok": sum.Verified, "errors": sum.VerifyErrors}
@@ -238,8 +256,15 @@ func SanitizeComponent(c string) string {
 	if out == "" || out == "." || out == ".." {
 		out = "_"
 	}
-	if len(out) > 150 {
-		out = out[:150]
+	if len(out) > 150 { // cut on a character boundary: a split UTF-8 sequence becomes U+FFFD on disk and two names collide
+		cut := 150
+		for cut > 0 && !utf8.RuneStart(out[cut]) {
+			cut--
+		}
+		out = strings.TrimRight(out[:cut], ". ")
+		if out == "" {
+			out = "_"
+		}
 	}
 	base := strings.ToUpper(out)
 	if i := strings.IndexByte(base, '.'); i >= 0 {
@@ -299,7 +324,15 @@ func copyVerified(ctx context.Context, o Options, dst, wantSHA string) (int64, s
 	if err := os.MkdirAll(longPath(filepath.Dir(dst)), 0o755); err != nil {
 		return 0, "", err
 	}
-	tmp := dst + ".partial"
+	// a destination must never be replaced: two artifacts mapping to one file would leave the manifest describing
+	// the first and the disk holding the second
+	if _, err := os.Lstat(longPath(dst)); err == nil {
+		return 0, "", fmt.Errorf("destination %s already exists in the package", dst)
+	}
+	tmp, err := stagingPath(o.Dir)
+	if err != nil {
+		return 0, "", err
+	}
 	out, err := os.OpenFile(longPath(tmp), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {
 		return 0, "", err
@@ -324,6 +357,18 @@ func copyVerified(ctx context.Context, o Options, dst, wantSHA string) (int64, s
 		return 0, "", err
 	}
 	return n, digest, nil
+}
+
+var stagingSeq atomic.Int64
+
+// stagingPath returns a fresh temporary file inside the package's own .mantis folder: staged files live outside
+// the evidence tree, so no name copied from the examined host can clash with them or hide from the checksums.
+func stagingPath(root string) (string, error) {
+	dir := filepath.Join(root, ".mantis", "staging")
+	if err := os.MkdirAll(longPath(dir), 0o755); err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, fmt.Sprintf("%d-%d.part", os.Getpid(), stagingSeq.Add(1))), nil
 }
 
 type ctxReader struct {
@@ -377,20 +422,17 @@ func listFiles(dir string) ([]string, error) {
 		if err != nil {
 			return err
 		}
+		rel, _ := filepath.Rel(dir, p)
+		rel = filepath.ToSlash(rel)
 		if d.IsDir() {
-			// the case store lives next to the package when the output directory is shared
-			if d.Name() == ".mantis" {
+			// only the package's own case store is excluded; a ".mantis" folder copied from the host is evidence
+			if rel == ".mantis" {
 				return filepath.SkipDir
 			}
 			return nil
 		}
-		rel, _ := filepath.Rel(dir, p)
-		rel = filepath.ToSlash(rel)
 		switch rel {
 		case "checksums.sha256", "verification.json":
-			return nil
-		}
-		if strings.HasSuffix(rel, ".partial") {
 			return nil
 		}
 		out = append(out, rel)
@@ -443,6 +485,42 @@ func verify(ctx context.Context, dir string, entries []checkEntry) []string {
 	return problems
 }
 
+// crossCheck ties the manifest to the disk: every exported artifact and derived file must be in the checksums
+// with the digest the manifest records, and every checksummed file must be one the manifest accounts for.
+// Without it, a replaced file or a leftover from another run would still verify.
+func crossCheck(entries []checkEntry, arts []Artifact, derived []Derived) []string {
+	disk := make(map[string]string, len(entries))
+	for _, e := range entries {
+		disk[e.rel] = e.sha
+	}
+	known := map[string]bool{"manifest.json": true, "acquisition-report.json": true, "acquisition-errors.json": true, "README-PACKAGE.txt": true}
+	var problems []string
+	expect := func(rel, sha, what string) {
+		known[rel] = true
+		got, ok := disk[rel]
+		switch {
+		case !ok:
+			problems = append(problems, rel+": "+what+" in the manifest but missing from the package")
+		case !strings.EqualFold(got, sha):
+			problems = append(problems, rel+": "+what+" digest on disk differs from the manifest")
+		}
+	}
+	for _, a := range arts {
+		if a.Destination != "" {
+			expect(a.Destination, a.SHA256, "artifact "+a.ID)
+		}
+	}
+	for _, d := range derived {
+		expect(d.Path, d.SHA256, "derived file")
+	}
+	for _, e := range entries {
+		if !known[e.rel] {
+			problems = append(problems, e.rel+": file in the package that the manifest does not account for")
+		}
+	}
+	return problems
+}
+
 const readme = `MANTIS EVIDENCE PACKAGE
 =======================
 
@@ -454,6 +532,8 @@ This folder is a portable acquisition package produced by mantis-collect.
   checksums.sha256         SHA-256 of every file in this package (sha256sum format: "<hex> *<path>")
   verification.json        result of re-hashing the package from disk after export
   <category>/...           the acquired artifacts, preserved byte-for-byte where the method allows
+  csv/                     (only with --csv) flat tables derived from the JSON snapshots, for reading without a viewer;
+                           not evidence: each row names its source artifact, that artifact's SHA-256 and the element it came from
 
 Verify integrity (PowerShell):   Get-Content checksums.sha256 | ForEach-Object { $h,$p = $_ -split ' \*',2; (Get-FileHash $p -Algorithm SHA256).Hash -ieq $h }
 Verify integrity (Linux/macOS):  sha256sum -c checksums.sha256

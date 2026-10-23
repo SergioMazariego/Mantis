@@ -248,9 +248,75 @@ func dnsCache(w *warnings) []map[string]any {
 	}
 	var out []map[string]any
 	for e := head; e != nil && len(out) < 100000; e = (*dnsCacheEntry)(*(*unsafe.Pointer)(unsafe.Pointer(&e.Next))) {
-		out = append(out, map[string]any{"name": windows.UTF16PtrToString(e.Name), "type": e.Type, "data_length": e.DataLen, "flags": e.Flags})
+		name := windows.UTF16PtrToString(e.Name)
+		rec := map[string]any{"name": name, "type": e.Type, "type_name": dnsTypeName(e.Type), "data_length": e.DataLen, "flags": e.Flags}
+		if len(out) < maxDNSCacheLookups {
+			if answers, err := dnsCachedAnswers(name, e.Type); err == nil && len(answers) > 0 {
+				rec["records"] = answers
+			}
+		}
+		out = append(out, rec)
+	}
+	if len(out) > maxDNSCacheLookups {
+		w.add("DNS cache has %d entries: records were read for the first %d only", len(out), maxDNSCacheLookups)
 	}
 	return out
+}
+
+const (
+	dnsQueryNoWireQuery = 0x10 // DNS_QUERY_NO_WIRE_QUERY: answer from the local cache only, never from the network
+	maxDNSCacheLookups  = 5000
+)
+
+func dnsTypeName(t uint16) string {
+	switch t {
+	case windows.DNS_TYPE_A:
+		return "A"
+	case windows.DNS_TYPE_AAAA:
+		return "AAAA"
+	case windows.DNS_TYPE_CNAME:
+		return "CNAME"
+	case windows.DNS_TYPE_PTR:
+		return "PTR"
+	case windows.DNS_TYPE_MX:
+		return "MX"
+	case windows.DNS_TYPE_TEXT:
+		return "TXT"
+	case windows.DNS_TYPE_SRV:
+		return "SRV"
+	case windows.DNS_TYPE_SOA:
+		return "SOA"
+	}
+	return ""
+}
+
+// dnsCachedAnswers reads the cached answer of one cache entry. The query is restricted to the resolver cache, so
+// collection never sends a DNS packet. Addresses, aliases and TTLs are what turn a cache name into evidence.
+func dnsCachedAnswers(name string, qtype uint16) ([]map[string]any, error) {
+	if name == "" {
+		return nil, nil
+	}
+	var head *windows.DNSRecord
+	if err := windows.DnsQuery(name, qtype, dnsQueryNoWireQuery, nil, &head, nil); err != nil {
+		return nil, err
+	}
+	defer windows.DnsRecordListFree(head, 1) // DnsFreeRecordList
+	var out []map[string]any
+	for r := head; r != nil && len(out) < 256; r = r.Next {
+		a := map[string]any{"name": windows.UTF16PtrToString(r.Name), "type": r.Type, "type_name": dnsTypeName(r.Type), "ttl_seconds": r.Ttl}
+		switch r.Type {
+		case windows.DNS_TYPE_A:
+			a["address"] = net.IP(r.Data[:4]).String()
+		case windows.DNS_TYPE_AAAA:
+			a["address"] = net.IP(r.Data[:16]).String()
+		case windows.DNS_TYPE_CNAME, windows.DNS_TYPE_PTR:
+			if p := *(**uint16)(unsafe.Pointer(&r.Data[0])); p != nil {
+				a["target"] = windows.UTF16PtrToString(p)
+			}
+		}
+		out = append(out, a)
+	}
+	return out, nil
 }
 
 // ---- interfaces ----
@@ -274,10 +340,12 @@ func interfaceConfig(w *warnings) map[string]any {
 	size := uint32(32 << 10)
 	var buf []byte
 	const flags = 0x80 | 0x10 // GAA_FLAG_INCLUDE_GATEWAYS | GAA_FLAG_INCLUDE_PREFIX
+	filled := false
 	for i := 0; i < 8; i++ {
 		buf = make([]byte, size)
 		err := windows.GetAdaptersAddresses(syscall.AF_UNSPEC, flags, 0, (*windows.IpAdapterAddresses)(unsafe.Pointer(&buf[0])), &size)
 		if err == nil {
+			filled = true
 			break
 		}
 		if err != windows.ERROR_BUFFER_OVERFLOW {
@@ -285,12 +353,18 @@ func interfaceConfig(w *warnings) map[string]any {
 			return map[string]any{"adapters": out}
 		}
 	}
+	if !filled { // never parse a buffer the API did not fill: it would invent an empty adapter
+		w.add("GetAdaptersAddresses: the adapter list kept growing; no adapters recorded")
+		return map[string]any{"adapters": out}
+	}
 	for a := (*windows.IpAdapterAddresses)(unsafe.Pointer(&buf[0])); a != nil; a = a.Next {
 		ad := adapter{Name: windows.UTF16PtrToString(a.FriendlyName), Description: windows.UTF16PtrToString(a.Description), Index: a.IfIndex,
 			MTU: a.Mtu, Type: a.IfType, Oper: a.OperStatus, DNSSuffix: windows.UTF16PtrToString(a.DnsSuffix)}
 		if a.PhysicalAddressLength > 0 {
 			ad.MAC = fmt.Sprintf("%x", a.PhysicalAddress[:a.PhysicalAddressLength])
 		}
+		const ipAdapterDHCPEnabled = 0x4 // IP_ADAPTER_DHCP_ENABLED
+		ad.DHCPv4 = fmt.Sprint(a.Flags&ipAdapterDHCPEnabled != 0)
 		for u := a.FirstUnicastAddress; u != nil; u = u.Next {
 			if ip := sockaddrIP(u.Address); ip != "" {
 				ad.Addresses = append(ad.Addresses, ip)
@@ -343,9 +417,9 @@ func networkSources() []collector.Source {
 			"GetExtendedTcpTable/GetExtendedUdpTable", "iphlpapi://extended-tables", func(ctx context.Context, w *warnings) (any, error) {
 				return map[string]any{"sockets": socketTables(w), "note": "live snapshot at collection time; historical connections are not derivable from this table"}, nil
 			}), available),
-		withDetect(jsonSource("network-dns-cache", m("DNS client cache", "Name-resolution cache entries present now (undocumented dnsapi export; absent on some builds)", collector.InAll),
-			"DnsGetCacheDataTable", "dnsapi://cache", func(ctx context.Context, w *warnings) (any, error) {
-				return map[string]any{"entries": dnsCache(w)}, nil
+		withDetect(jsonSource("network-dns-cache", m("DNS client cache", "Name-resolution cache entries present now with their cached answers (addresses, aliases, TTL), read from the local cache only (undocumented dnsapi export; absent on some builds)", collector.InAll),
+			"DnsGetCacheDataTable+DnsQuery(cache only)", "dnsapi://cache", func(ctx context.Context, w *warnings) (any, error) {
+				return map[string]any{"entries": dnsCache(w), "note": "records are read with DNS_QUERY_NO_WIRE_QUERY: no DNS packet is sent during collection"}, nil
 			}), available),
 		withDetect(jsonSource("network-neighbors-routes", m("ARP/neighbor cache and routing table", "Live IPv4/IPv6 neighbor cache and routing table", collector.InAll),
 			"GetIpNetTable2/GetIpForwardTable2", "iphlpapi://neighbors-routes", func(ctx context.Context, w *warnings) (any, error) { return neighborsAndRoutes(w), nil }), available),

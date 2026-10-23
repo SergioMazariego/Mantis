@@ -16,7 +16,7 @@ func usbSources() []collector.Source {
 		return baseMeta(name, desc, "usb", priv, p)
 	}
 	return []collector.Source{
-		regSnapshotSource("usb-device-history", um("USB and removable storage registry history", "USBSTOR/USB enumeration (device ids, serials, friendly names and Properties keys with device timestamps), MountedDevices, Windows Portable Devices, EMDMgmt, DeviceContainers",
+		regSnapshotSource("usb-device-history", um("USB and removable storage registry history", "USBSTOR/USB enumeration (device ids, serials, friendly names; the Properties subkeys with first/last connection times are usually readable by SYSTEM only, so the SYSTEM hive copy is their reliable source), MountedDevices, Windows Portable Devices, EMDMgmt, DeviceContainers",
 			collector.InStdFull, collector.PrivUser), `HKLM\SYSTEM\CurrentControlSet\Enum\USBSTOR | USB | MountedDevices | ...`, func() []regTarget {
 			return []regTarget{hklm(`SYSTEM\CurrentControlSet\Enum\USBSTOR`, true, 0), hklm(`SYSTEM\CurrentControlSet\Enum\USB`, true, 0),
 				hklm(`SYSTEM\CurrentControlSet\Enum\SCSI`, true, 3), hklm(`SYSTEM\CurrentControlSet\Enum\WpdBusEnumRoot`, true, 0),
@@ -84,8 +84,15 @@ func groupPolicySources() []collector.Source {
 	return []collector.Source{
 		walkGroup("gpo-local-policy-files", gm("Local Group Policy files", "Registry.pol, scripts, audit and security templates under System32\\GroupPolicy and GroupPolicyUsers", collector.InStdFull, collector.PrivAdmin),
 			win+`\System32\GroupPolicy*`, walkSpec{Roots: staticRoots(win+`\System32\GroupPolicy`, win+`\System32\GroupPolicyUsers`), MaxDepth: 8, MaxFiles: 3000, FileMax: 64 << 20}),
-		walkGroup("gpo-history-files", gm("Group Policy history (cached applied GPOs)", "Cached copies of applied policy under ProgramData\\Microsoft\\Group Policy\\History", collector.InStdFull, collector.PrivAdmin),
+		walkGroup("gpo-history-files", gm("Group Policy history and state files", "Everything under ProgramData\\Microsoft\\Group Policy: cached copies of applied GPOs (History) and client-side state", collector.InStdFull, collector.PrivAdmin),
 			expandEnv(`%ProgramData%`)+`\Microsoft\Group Policy`, walkSpec{Roots: staticRoots(expandEnv(`%ProgramData%`) + `\Microsoft\Group Policy`), MaxDepth: 8, MaxFiles: 3000, FileMax: 64 << 20}),
+		// ADMX/ADML templates of this host: they turn policy registry values into the setting names an analyst reads
+		walkGroup("gpo-policy-definitions", gm("Administrative templates (PolicyDefinitions)", "ADMX templates and their ADML language files from Windows\\PolicyDefinitions, needed to name the policy settings found in Registry.pol and the applied policy keys", collector.InStdFull, collector.PrivUser),
+			win+`\PolicyDefinitions`, walkSpec{Roots: staticRoots(win + `\PolicyDefinitions`), MaxDepth: 2, MaxFiles: 8000, FileMax: 16 << 20,
+				Match: func(_, n string) bool {
+					l := strings.ToLower(n)
+					return strings.HasSuffix(l, ".admx") || strings.HasSuffix(l, ".adml")
+				}}),
 		regSnapshotSource("gpo-applied-registry", gm("Applied Group Policy registry state", "Group Policy history (GPO list, extension status, last processing) and policy-delivered registry values for machine and loaded users", collector.InStdFull, collector.PrivUser),
 			`HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Group Policy | Policies`, func() []regTarget {
 				t := []regTarget{hklm(`SOFTWARE\Microsoft\Windows\CurrentVersion\Group Policy`, true, 0), hklm(`SOFTWARE\Policies`, true, 0),

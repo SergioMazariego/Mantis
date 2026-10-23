@@ -43,6 +43,14 @@ func indirectStringStrict(s string) string {
 	if !strings.HasPrefix(s, "@") {
 		return s
 	}
+	// "@<file>,-<id>": the file is loaded to read its string table; never from another host
+	file := s[1:]
+	if i := strings.IndexAny(file, ",;"); i >= 0 {
+		file = file[:i]
+	}
+	if isRemotePath(expandEnv(file)) {
+		return ""
+	}
 	src, err := windows.UTF16PtrFromString(s)
 	if err != nil {
 		return ""
@@ -98,6 +106,33 @@ func startupApproved(root registry.Key, base, name string) (known, disabled bool
 	return true, b[0]&1 == 1 // 02/06 enabled, 03/07 disabled
 }
 
+const startupFolderApproved = `Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder`
+
+// startupFolderDisabled reports whether Task Manager's startup switch disabled a file in a Startup folder: the
+// all-users folder is governed by the machine's StartupApproved\StartupFolder, a user's folder by that user's.
+func startupFolderDisabled(dir, name string) bool {
+	low := strings.ToLower(dir)
+	if strings.HasPrefix(low, strings.ToLower(expandEnv(`%ProgramData%`))+`\`) {
+		known, dis := startupApproved(registry.LOCAL_MACHINE, startupFolderApproved, name)
+		return known && dis
+	}
+	for _, up := range userProfiles() {
+		if up.SID != "" && strings.HasPrefix(low, strings.ToLower(up.Path)+`\`) {
+			known, dis := startupApproved(registry.USERS, up.SID+`\`+startupFolderApproved, name)
+			return known && dis
+		}
+	}
+	return false
+}
+
+// wow6432Path turns a machine software path into its 32-bit (WOW6432Node) spelling.
+func wow6432Path(path string) string {
+	if len(path) > len(`Software\`) && strings.EqualFold(path[:len(`Software\`)], `Software\`) {
+		return path[:len(`Software\`)] + `WOW6432Node\` + path[len(`Software\`):]
+	}
+	return path
+}
+
 // annotateEntries fills key_time_utc, enabled and the descriptions for the entries it understands.
 func annotateEntries(entries []enrichEntry) {
 	tasksDir := windowsDir() + `\System32\Tasks`
@@ -141,6 +176,17 @@ func annotateEntries(entries []enrichEntry) {
 				}
 				k.Close()
 			}
+		case "appinit":
+			// AppInit_DLLs are only loaded when LoadAppInit_DLLs is 1 in the same key
+			if root, path, ok := splitRegistryLocation(e.Location); ok {
+				e.KeyTimeUTC = keyTimeUTC(root, path)
+				if k, err := registry.OpenKey(root, path, registry.QUERY_VALUE|registry.WOW64_64KEY); err == nil {
+					if v, _, err := k.GetIntegerValue("LoadAppInit_DLLs"); err != nil || v == 0 {
+						e.Enabled = "disabled"
+					}
+					k.Close()
+				}
+			}
 		case "network_providers":
 			// the provider's display name comes from its service key
 			if v := regStrings(registry.LOCAL_MACHINE, `SYSTEM\CurrentControlSet\Services\`+e.Entry+`\NetworkProvider`, registry.WOW64_64KEY); v != nil {
@@ -150,6 +196,15 @@ func annotateEntries(entries []enrichEntry) {
 			}
 			e.KeyTimeUTC = keyTimeUTC(registry.LOCAL_MACHINE, `SYSTEM\CurrentControlSet\Services\`+e.Entry)
 		default:
+			if e.Category == "logon" && strings.Contains(strings.ToLower(e.Location), `\start menu\programs\startup`) {
+				if startupFolderDisabled(e.Location, e.Entry) {
+					e.Enabled = "disabled"
+				}
+				if strings.HasSuffix(strings.ToLower(e.Entry), ".lnk") {
+					e.EntryDescription = "Shortcut: target not resolved by the collector (the .lnk is preserved in persistence-startup-folders)"
+				}
+				break
+			}
 			root, path, ok := splitRegistryLocation(e.Location)
 			if !ok {
 				break // folders and other non-registry locations
@@ -164,7 +219,9 @@ func annotateEntries(entries []enrichEntry) {
 			} else {
 				e.KeyTimeUTC = keyTimeUTC(root, path)
 			}
-			if e.Category == "logon" {
+			// StartupApproved\Run governs the Run keys only (not RunOnce, Policies\Explorer\Run, Active Setup...):
+			// applied elsewhere, a same-named value would mark as disabled an entry that does run
+			if e.Category == "logon" && strings.HasSuffix(strings.ToLower(path), `\currentversion\run`) {
 				base, name := "", e.Entry
 				switch {
 				case root == registry.LOCAL_MACHINE && strings.Contains(path, `WOW6432Node`):

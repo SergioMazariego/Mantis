@@ -262,6 +262,80 @@ Check 'V-TIMES: exported event logs and copied files keep the source creation, a
   if ($without.Count -gt 0.1 * $files.Count) { throw "$($without.Count) of $($files.Count) copied files lack source times" }
   $true
 }
+Check 'V-FIX: execution values whose name is a path keep their data (never redacted)' {
+  $keys = (Text 'execution\execution-compat-assistant.json' | ConvertFrom-Json).data.keys
+  $v = @($keys | ForEach-Object { $_.values } | Where-Object { $_.name -like '*MantisFixture\tokenizer.exe' }) | Select-Object -First 1
+  if (-not $v) { throw 'the fixture value was not dumped' }
+  if ($v.redacted -or -not $v.data_base64) { throw 'an execution value named after a path was redacted' }
+  $true
+}
+Check 'V-FIX: the DNS cache records cached answers (address) without querying the network' {
+  # the cache lists a name once per record type (A, AAAA...): the answer can be on any of them
+  $e = @((Text 'network\network-dns-cache.json' | ConvertFrom-Json).data.entries | Where-Object { $_.name -eq 'mantis-fixture.test' })
+  if ($e.Count -eq 0) { throw 'the fixture name is not in the DNS cache dump' }
+  if (-not ($e | ForEach-Object { $_.records } | Where-Object { $_.address -eq '127.0.0.42' })) { throw "no cached answer 127.0.0.42: $($e | ConvertTo-Json -Compress -Depth 4)" }
+  $true
+}
+Check 'V-FIX: persistence keeps the logon script, the 32-bit Run view and the Startup folder state' {
+  $entries = (Text 'persistence\persistence-enriched.json' | ConvertFrom-Json).data.entries
+  $script = $entries | Where-Object { $_.entry -eq 'UserInitMprLogonScript' -and $_.launch_string -match 'MantisFixtureLogonScript' }
+  if (-not $script) { throw 'UserInitMprLogonScript was not listed with its command' }
+  $wow = $entries | Where-Object { $_.entry -eq 'MantisFixture32' } | Select-Object -First 1
+  if (-not $wow -or $wow.location -notmatch 'WOW6432Node') { throw "32-bit Run entry location: $($wow.location)" }
+  $startup = $entries | Where-Object { $_.entry -eq 'MantisFixture.cmd' } | Select-Object -First 1
+  if (-not $startup -or $startup.enabled -ne 'disabled') { throw "Startup folder entry state: $($startup.enabled)" }
+  $dump = (Text 'persistence\persistence-autorun-registry.json' | ConvertFrom-Json).data.keys | Where-Object { $_.path -like '*\Environment' }
+  $val = @($dump | ForEach-Object { $_.values } | Where-Object { $_.name -eq 'UserInitMprLogonScript' }) | Select-Object -First 1
+  if (-not $val -or -not $val.text) { throw 'the Environment dump hides the logon script command' }
+  $true
+}
+Check 'V-AUDIT: a UNC autostart is recorded but never opened; lsass memory is never read' {
+  $d = (Text 'persistence\persistence-enriched.json' | ConvertFrom-Json).data
+  $unc = $d.entries | Where-Object { $_.entry -eq 'MantisFixtureUnc' } | Select-Object -First 1
+  if (-not $unc) { throw 'the UNC Run fixture was not listed' }
+  $img = $d.images | Where-Object { $_.path -like '\\mantis-fixture.invalid*' } | Select-Object -First 1
+  if (-not $img -or $img.exists -or $img.error -notmatch 'remote image not read') { throw "UNC image handling: $($img | ConvertTo-Json -Compress)" }
+  $lsass = (Text 'processes\processes-detailed.json' | ConvertFrom-Json).data.processes | Where-Object { $_.name -eq 'lsass.exe' } | Select-Object -First 1
+  if ($lsass -and ($lsass.peb_image_path -or $lsass.modules)) { throw 'the PEB or module list of lsass was read' }
+  $mm = (Text 'processes\processes-memory-map.json' | ConvertFrom-Json).data.processes | Where-Object { $_.name -eq 'lsass.exe' } | Select-Object -First 1
+  if ($mm -and $mm.executable) { throw 'the memory of lsass was queried' }
+  $true
+}
+Check 'V-FIX: SAM and SECURITY logs and RegBack copies only with explicit confirmation' {
+  $secret = @($man.artifacts | Where-Object { $_.destination -match '(?i)/config/(RegBack/)?(SAM|SECURITY)(\.|\{|$)' -and $_.id -notlike 'hive-secret-logs*' -and $_.id -notin 'hive-sam', 'hive-security' })
+  if ($secret.Count -gt 0) { throw "secret hive files outside the sensitive sources: $(($secret | ForEach-Object id) -join ', ')" }
+  if ($Profile -ne 'full' -and @($man.artifacts | Where-Object { $_.id -like 'hive-secret-logs*' -and $_.destination }).Count -gt 0) { throw 'hive-secret-logs collected without confirmation' }
+  $true
+}
+Check 'V-FIX: interfaces report DHCP state, snapshots carry their data version, $MFT carries source times' {
+  $ad = (Text 'network\network-interfaces.json' | ConvertFrom-Json).data.adapters
+  if (@($ad | Where-Object { $_.dhcpv4_enabled -notin 'true', 'false' }).Count -gt 0) { throw 'an adapter has no DHCP state' }
+  $doc = Text 'processes\processes-detailed.json' | ConvertFrom-Json
+  $art = Art 'processes-detailed' | Select-Object -First 1
+  if ($doc.data_version -ne 2 -or $art.data_version -ne 2) { throw "data_version envelope=$($doc.data_version) manifest=$($art.data_version)" }
+  $mft = @(Art 'ntfs-mft-*' | Where-Object { $_.status -like 'collected*' })
+  if ($mft.Count -gt 0 -and @($mft | Where-Object { -not $_.notes.source_created_utc }).Count -gt 0) { throw '$MFT copied without its source times' }
+  $true
+}
+Check 'V-FIX: administrative templates (PolicyDefinitions) collected for the policy viewer' {
+  @(Art 'gpo-policy-definitions*' | Where-Object { $_.status -like 'collected*' -and $_.destination -match '(?i)\.adm[xl]$' }).Count -ge 50
+}
+Check 'V-CSV: derived CSV views match their JSON and are covered by the checksums' {
+  if ($Profile -ne 'standard') { return $true }  # the CI asks for --csv on the standard run only
+  $derived = @($man.derived)
+  if ($derived.Count -lt 5) { throw "only $($derived.Count) CSV views" }
+  $sums = Get-Content (Join-Path $Package 'checksums.sha256')
+  foreach ($d in $derived) {
+    $f = Join-Path $Package ($d.path -replace '/', '\')
+    if ((Get-FileHash -LiteralPath $f -Algorithm SHA256).Hash.ToLower() -ne $d.sha256) { throw "$($d.path) hash differs from the manifest" }
+    if (-not ($sums | Where-Object { $_ -like "*$($d.path)" })) { throw "$($d.path) is not in checksums.sha256" }
+  }
+  $procs = (Text 'processes\processes-detailed.json' | ConvertFrom-Json).data.processes
+  $csv = Import-Csv (Join-Path $Package 'csv\processes.csv')
+  if ($csv.Count -ne $procs.Count) { throw "processes.csv has $($csv.Count) rows, the JSON $($procs.Count)" }
+  if (@($csv | Where-Object { $_.source_artifact_id -ne 'processes-detailed' -or -not $_.source_pointer }).Count -gt 0) { throw 'rows without provenance' }
+  $true
+}
 Check 'V-SYSTEM: disks report offline, read_only and dynamic state' {
   $disk = ((Text 'system\system-disks.json' | ConvertFrom-Json).data.physical_disks) | Select-Object -First 1
   $disk -and ($disk.PSObject.Properties.Name -contains 'offline') -and ($disk.PSObject.Properties.Name -contains 'read_only')
@@ -323,3 +397,4 @@ if ($ReportPath) {
   $md | Set-Content -Path $ReportPath -Encoding utf8
 }
 if ($fail -gt 0) { exit 1 }
+exit 0  # never inherit the exit code of the last native command (the collector exits 1 when a source has gaps)

@@ -167,7 +167,8 @@ func (p *picker) drainRunEvents() {
 // successful unless the artifact was actually published.
 func classify(it collector.ItemResult) (itemState, string, string) {
 	if errors.Is(it.Err, collector.ErrTotalBudgetExceeded) {
-		return stSkipped, "Presupuesto total de bytes agotado", "Se alcanzó --max-total-bytes antes de procesar esta fuente."
+		// not acquired: the manifest records it as failed, and the run must not read as complete
+		return stFailed, "Presupuesto total de bytes agotado: no se recolectó", "Se agotó el tope de bytes de la recolección (perfil o --max-total-bytes) antes de procesar esta fuente."
 	}
 	method := it.Method
 	switch it.Classify() {

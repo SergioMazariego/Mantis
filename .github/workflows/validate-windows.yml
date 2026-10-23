@@ -60,7 +60,7 @@ jobs:
           $failed = $false
           foreach ($p in 'quick', 'standard', 'full') {
             $out = "C:\mantis-validate\out-$p"
-            $extra = @(); if ($p -eq 'full') { $extra = @('--confirm-sensitive') }
+            $extra = @(); if ($p -eq 'full') { $extra = @('--confirm-sensitive') }; if ($p -eq 'standard') { $extra = @('--csv') }
             Write-Host "::group::collect $p"
             $sw = [Diagnostics.Stopwatch]::StartNew()
             & $exe --profile $p --output $out @extra *>&1 | Tee-Object "C:\mantis-validate\logs\collect-$p.txt" | Select-Object -Last 40

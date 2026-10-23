@@ -191,7 +191,11 @@ func rawVolumeFor(drive string) (*ntfs.Volume, error) {
 	rawMu.Lock()
 	defer rawMu.Unlock()
 	if rv, ok := rawVols[drive]; ok {
-		return rv.vol, rv.err
+		// a lasting outcome is reused; a transient failure (a torn read of a live volume) is retried next time
+		if rv.err == nil || errors.Is(rv.err, collector.ErrNotSupported) || errors.Is(rv.err, collector.ErrAccessDenied) {
+			return rv.vol, rv.err
+		}
+		delete(rawVols, drive)
 	}
 	rv := &rawVolume{}
 	rawVols[drive] = rv
@@ -289,6 +293,11 @@ func openFile(ctx context.Context, path string) (*acqReader, error) {
 			return nil, fmt.Errorf("%w: %s", collector.ErrNotPresent, path)
 		}
 		return nil, fmt.Errorf("raw NTFS open %s: %w (direct read failed: %v)", path, err, derr)
+	}
+	if f.IsReparsePoint() {
+		// WOF-compressed, deduplicated or cloud files keep their content elsewhere: the unnamed $DATA read raw
+		// would be empty or zeros, and would be stored with a valid hash as if it were the file
+		return nil, fmt.Errorf("%w: %s is a reparse point (compressed, deduplicated or cloud file) whose content cannot be read from the raw volume; direct read failed: %v", collector.ErrNotSupported, path, derr)
 	}
 	notes := map[string]string{
 		"read_mode":     "raw volume read via NTFS parser; direct read failed: " + derr.Error(),
@@ -406,6 +415,29 @@ func scratchDir() string {
 // not_present (invalid name for stream paths, device not ready) still deserve a raw-read attempt.
 func isTrulyAbsent(err error) bool {
 	return errors.Is(err, windows.ERROR_FILE_NOT_FOUND) || errors.Is(err, windows.ERROR_PATH_NOT_FOUND)
+}
+
+// isRemotePath reports paths whose content lives on another host: UNC and WebDAV paths and mapped network
+// drives. Opening one makes the collector authenticate to that host (an attacker-planted \\host\share path in an
+// autostart entry would receive the administrator's NTLM credentials), so such paths are recorded, never read.
+func isRemotePath(p string) bool {
+	p = strings.Trim(strings.TrimSpace(p), `"`)
+	l := strings.ToLower(p)
+	switch {
+	case strings.HasPrefix(l, `\\?\unc\`), strings.HasPrefix(l, `\??\unc\`), strings.HasPrefix(l, `\device\mup\`):
+		return true
+	case strings.HasPrefix(l, `\\?\`), strings.HasPrefix(l, `\\.\`), strings.HasPrefix(l, `\??\`):
+		p = p[4:]
+	case strings.HasPrefix(l, `\\`) || strings.HasPrefix(l, `//`):
+		return true
+	}
+	if len(p) >= 2 && p[1] == ':' {
+		root, err := windows.UTF16PtrFromString(strings.ToUpper(p[:1]) + `:\`)
+		if err == nil && windows.GetDriveType(root) == windows.DRIVE_REMOTE {
+			return true
+		}
+	}
+	return false
 }
 
 // cloudPlaceholder reports files whose content lives in the cloud (OneDrive and similar). Reading
