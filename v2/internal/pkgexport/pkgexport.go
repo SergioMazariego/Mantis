@@ -44,6 +44,7 @@ type Options struct {
 	Items        []collector.ItemResult
 	GlobalNotes  []string // run-level warnings (not elevated, skipped sources, limits)
 	SelectedOnly bool     // true when the operator chose a subset (always recorded)
+	CSV          bool     // also write csv/ views derived from the JSON snapshots (for analysts without a viewer)
 
 	// Open returns a verified reader for a stored blob by SHA-256.
 	Open func(ctx context.Context, sha256hex string) (io.ReadCloser, error)
@@ -58,6 +59,7 @@ type Artifact struct {
 	Category    string            `json:"category"`
 	SourceType  string            `json:"source_type,omitempty"`
 	ActionTypes []string          `json:"action_types,omitempty"`
+	DataVersion int               `json:"data_version,omitempty"` // structure version of a JSON snapshot's data
 	SourcePath  string            `json:"source_path,omitempty"`
 	Destination string            `json:"destination,omitempty"`
 	AcquiredUTC string            `json:"acquired_utc,omitempty"`
@@ -97,6 +99,7 @@ type manifest struct {
 	FinishedUTC string            `json:"finished_utc"`
 	Hashing     string            `json:"hash_algorithm"`
 	Artifacts   []Artifact        `json:"artifacts"`
+	Derived     []Derived         `json:"derived,omitempty"` // files computed from artifacts (CSV views); not evidence
 }
 
 // Write exports the package and verifies it. A non-nil Summary is returned even
@@ -122,7 +125,7 @@ func Write(ctx context.Context, o Options) (*Summary, error) {
 			ID: it.SourceID, Collector: it.SourceID, Name: it.Meta.Name, Category: orDefault(it.Meta.Category, "other"),
 			SourceType: it.Meta.SourceType, SourcePath: orDefault(it.Meta.SourcePath, it.Locator), Method: it.Method,
 			Status: string(disp), Privilege: string(it.Meta.Privilege), Windows: it.Meta.Windows,
-			SideEffects: it.Meta.SideEffects, Coverage: it.Meta.Artifacts, ActionTypes: it.Meta.ActionTypes, Notes: it.Notes,
+			SideEffects: it.Meta.SideEffects, Coverage: it.Meta.Artifacts, ActionTypes: it.Meta.ActionTypes, DataVersion: it.Meta.DataVersion, Notes: it.Notes,
 		}
 		if !it.AcquiredAt.IsZero() {
 			art.AcquiredUTC = it.AcquiredAt.UTC().Format(time.RFC3339Nano)
@@ -158,15 +161,27 @@ func Write(ctx context.Context, o Options) (*Summary, error) {
 		return artifacts[i].ID < artifacts[j].ID
 	})
 
+	var derived []Derived
+	if o.CSV {
+		d, err := writeCSVViews(ctx, o.Dir, artifacts)
+		derived = d
+		if err != nil { // the evidence is complete without the views: record the problem, keep the package
+			o.GlobalNotes = append(o.GlobalNotes, "CSV views incomplete: "+err.Error())
+		}
+		if len(derived) > 0 {
+			o.GlobalNotes = append(o.GlobalNotes, fmt.Sprintf("%d CSV views were derived from the JSON snapshots into csv/; they are a convenience, not evidence (see derived in manifest.json)", len(derived)))
+		}
+	}
+
 	tool := map[string]string{"name": "mantis-collect", "version": o.ToolVersion}
 	man := manifest{Schema: ManifestSchema, Tool: tool, CaseID: o.CaseID, TenantID: o.TenantID, HostID: o.HostID, Host: o.Host,
 		Profile: o.Profile, Privilege: o.Privilege, StartedUTC: o.StartedAt.UTC().Format(time.RFC3339Nano),
-		FinishedUTC: o.FinishedAt.UTC().Format(time.RFC3339Nano), Hashing: "SHA-256", Artifacts: artifacts}
+		FinishedUTC: o.FinishedAt.UTC().Format(time.RFC3339Nano), Hashing: "SHA-256", Artifacts: artifacts, Derived: derived}
 	report := map[string]any{
 		"schema": ReportSchema, "case_id": o.CaseID, "host_id": o.HostID, "profile": o.Profile, "privilege": o.Privilege,
 		"started_utc": man.StartedUTC, "finished_utc": man.FinishedUTC,
 		"duration_seconds":         o.FinishedAt.Sub(o.StartedAt).Seconds(),
-		"totals":                   map[string]any{"artifacts": len(artifacts), "files": sum.Files, "bytes": sum.Bytes, "by_status": sum.ByStatus, "by_category": sum.ByCategory},
+		"totals":                   map[string]any{"artifacts": len(artifacts), "files": sum.Files, "bytes": sum.Bytes, "by_status": sum.ByStatus, "by_category": sum.ByCategory, "derived_files": len(derived)},
 		"operator_selected_subset": o.SelectedOnly,
 		"notes":                    o.GlobalNotes,
 		"statement": "This package contains only the sources listed in manifest.json. Every source is reported with its own status; " +
@@ -454,6 +469,8 @@ This folder is a portable acquisition package produced by mantis-collect.
   checksums.sha256         SHA-256 of every file in this package (sha256sum format: "<hex> *<path>")
   verification.json        result of re-hashing the package from disk after export
   <category>/...           the acquired artifacts, preserved byte-for-byte where the method allows
+  csv/                     (only with --csv) flat tables derived from the JSON snapshots, for reading without a viewer;
+                           not evidence: each row names its source artifact, that artifact's SHA-256 and the element it came from
 
 Verify integrity (PowerShell):   Get-Content checksums.sha256 | ForEach-Object { $h,$p = $_ -split ' \*',2; (Get-FileHash $p -Algorithm SHA256).Hash -ieq $h }
 Verify integrity (Linux/macOS):  sha256sum -c checksums.sha256

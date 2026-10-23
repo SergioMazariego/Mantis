@@ -86,6 +86,7 @@ type Meta struct {
 	Sensitive   bool        // needs explicit operator confirmation before collection
 	Artifacts   []string    // coverage-catalog IDs this source satisfies
 	ActionTypes []string    // user/system activity this source can evidence (the ActionX vocabulary), apart from SourceType
+	DataVersion int         // version of the structure of this source's JSON data; bumped whenever its fields change shape
 }
 
 // AvailState is the result of a read-only availability probe.

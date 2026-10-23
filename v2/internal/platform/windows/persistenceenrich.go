@@ -13,6 +13,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -311,14 +312,19 @@ func collectEnrichEntries(ctx context.Context, w *warnings) []enrichEntry {
 		name string
 	}{{registry.WOW64_64KEY, "", "64"}, {registry.WOW64_32KEY, `WOW6432Node\`, "32"}}
 
-	// Run keys: machine (both views) and loaded users
+	// Run keys: machine (both views) and loaded users. The 32-bit view is reported under its WOW6432Node path so
+	// it can be told apart and annotated against its own key (StartupApproved\Run32); a key shared by both views
+	// returns the same values twice and is listed once.
 	for _, rk := range []string{`Software\Microsoft\Windows\CurrentVersion\Run`, `Software\Microsoft\Windows\CurrentVersion\RunOnce`, `Software\Microsoft\Windows\CurrentVersion\Policies\Explorer\Run`} {
-		for _, v := range views {
-			hk(registry.LOCAL_MACHINE, "HKLM", rk, v.v, func(loc string, vals map[string][]string) {
-				for n, ss := range vals {
-					add("logon", loc, n, "System-wide", strings.Join(ss, " "))
-				}
-			})
+		vals64 := regStrings(registry.LOCAL_MACHINE, rk, registry.WOW64_64KEY)
+		for n, ss := range vals64 {
+			add("logon", `HKLM\`+rk, n, "System-wide", strings.Join(ss, " "))
+		}
+		if vals32 := regStrings(registry.LOCAL_MACHINE, rk, registry.WOW64_32KEY); vals32 != nil && !reflect.DeepEqual(vals32, vals64) {
+			loc := `HKLM\` + wow6432Path(rk)
+			for n, ss := range vals32 {
+				add("logon", loc, n, "System-wide", strings.Join(ss, " "))
+			}
 		}
 		for _, sid := range sortedLoadedSIDs() {
 			hk(registry.USERS, "HKU", sid+`\`+rk, registry.WOW64_64KEY, func(loc string, vals map[string][]string) {
@@ -327,6 +333,16 @@ func collectEnrichEntries(ctx context.Context, w *warnings) []enrichEntry {
 				}
 			})
 		}
+	}
+	// UserInitMprLogonScript: a per-user logon script run by Winlogon (stored among the user's environment variables)
+	for _, sid := range sortedLoadedSIDs() {
+		hk(registry.USERS, "HKU", sid+`\Environment`, registry.WOW64_64KEY, func(loc string, vals map[string][]string) {
+			for _, s := range lookupValue(vals, "UserInitMprLogonScript") {
+				if strings.TrimSpace(s) != "" {
+					add("logon", loc, "UserInitMprLogonScript", sid, s)
+				}
+			}
+		})
 	}
 	// Winlogon, AppInit, LSA, KnownDLLs, codecs, print monitors
 	hk(registry.LOCAL_MACHINE, "HKLM", `SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon`, registry.WOW64_64KEY, func(loc string, vals map[string][]string) {

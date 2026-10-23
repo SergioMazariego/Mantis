@@ -447,12 +447,32 @@ func (w *warnings) add(format string, args ...any) {
 }
 
 type jsonDoc struct {
-	Schema     string   `json:"schema"`
-	Kind       string   `json:"kind"`
-	CapturedAt string   `json:"captured_at_utc"`
-	Host       string   `json:"host"`
-	Data       any      `json:"data"`
-	Warnings   []string `json:"warnings,omitempty"`
+	Schema      string   `json:"schema"`
+	Kind        string   `json:"kind"`
+	DataVersion int      `json:"data_version"` // structure version of Data for this kind (see dataVersions)
+	CapturedAt  string   `json:"captured_at_utc"`
+	Host        string   `json:"host"`
+	Data        any      `json:"data"`
+	Warnings    []string `json:"warnings,omitempty"`
+}
+
+// dataVersions records, per JSON source, the version of the structure of its data. A reader (the analyst's viewer,
+// a script) uses it to know which fields to expect; bump the number whenever a source's fields change shape.
+// Sources not listed are at version 1.
+var dataVersions = map[string]int{
+	"processes-detailed":     2, // parent validity, token, protection, architecture, PEB, image enrichment, collected_utc
+	"processes-performance":  2, // threads: Win32 start address, stack bounds, TEB
+	"processes-handle-table": 2, // object type table and per-type names
+	"network-dns-cache":      2, // cached answers (address, alias, TTL) and type names
+	"network-interfaces":     2, // dhcpv4_enabled filled
+	"persistence-enriched":   2, // 32-bit Run keys under their WOW6432Node location, UserInitMprLogonScript, Startup folder state
+}
+
+func dataVersion(id string) int {
+	if v, ok := dataVersions[id]; ok {
+		return v
+	}
+	return 1
 }
 
 type jsonReader struct {
@@ -473,6 +493,8 @@ func jsonSource(id string, m collector.Meta, method, locator string, fn func(ctx
 	if m.DestPath == "" {
 		m.DestPath = m.Category + "/" + id + ".json"
 	}
+	version := dataVersion(id)
+	m.DataVersion = version
 	return collector.Source{
 		ID: id, Kind: "windows.snapshot", Locator: locator, Method: method, MaxBytes: 512 << 20, Meta: m,
 		Open: func(ctx context.Context) (io.ReadCloser, error) {
@@ -485,7 +507,7 @@ func jsonSource(id string, m collector.Meta, method, locator string, fn func(ctx
 				return nil, classifyErr(err)
 			}
 			host, _ := os.Hostname()
-			raw, err := json.MarshalIndent(jsonDoc{Schema: "mantis.snapshot/1", Kind: id, CapturedAt: time.Now().UTC().Format(time.RFC3339Nano),
+			raw, err := json.MarshalIndent(jsonDoc{Schema: "mantis.snapshot/1", Kind: id, DataVersion: version, CapturedAt: time.Now().UTC().Format(time.RFC3339Nano),
 				Host: host, Data: data, Warnings: w.items}, "", " ")
 			if err != nil {
 				return nil, err

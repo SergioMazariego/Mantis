@@ -96,6 +96,13 @@ func rawNTFSSource(id string, m collector.Meta, vol fixedVolume, ntfsPath string
 			}
 			notes := map[string]string{"read_mode": "raw volume read via NTFS parser", "consistency": "live raw read, not point-in-time consistent",
 				"volume_serial": v.Info().VolumeSerialHex, "logical_size": fmt.Sprint(f.Size())}
+			// the metadata file's own $STANDARD_INFORMATION times, read from its MFT record (same notes as every copied file)
+			ts := f.Timestamps()
+			for k, t := range map[string]time.Time{"source_created_utc": ts.Created, "source_accessed_utc": ts.Accessed, "source_modified_utc": ts.Modified} {
+				if !t.IsZero() {
+					notes[k] = t.UTC().Format(time.RFC3339Nano)
+				}
+			}
 			var r io.Reader = f.NewReader()
 			if annotate != nil {
 				start, extra := annotate(f)

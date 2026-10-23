@@ -80,6 +80,7 @@ func run() int {
 	tempDays := flag.Int("temp-modified-days", 0, "Windows Temp: keep only files modified in the last N days (0: any age)")
 	tempFiles := flag.Int("temp-max-files", 0, "Windows Temp: stop after this many files (0: 8000)")
 	tempDepth := flag.Int("temp-depth", 0, "Windows Temp: maximum folder depth (0: 6)")
+	csvViews := flag.Bool("csv", false, "also write csv/ tables derived from the JSON snapshots (for reading without a viewer; not evidence)")
 	force := flag.Bool("force", false, "continue even if free space looks insufficient")
 	cliSelect := flag.Bool("cli", false, "select sources interactively in the terminal")
 	showVersion := flag.Bool("version", false, "print version and exit")
@@ -174,7 +175,7 @@ func run() int {
 	}
 
 	cfg := runConfig{caseID: *caseIDValue, tenant: *tenantValue, actor: *actorValue, title: *caseTitle, profile: profileName,
-		outDir: outDir, dataDir: dataDir, budget: budget, force: *force}
+		outDir: outDir, dataDir: dataDir, budget: budget, force: *force, csv: *csvViews}
 	guiCollect = func(ctx context.Context, chosen []collector.Source, onEvent func(collector.Event)) ([]collector.ItemResult, error) {
 		run := cfg
 		if profile == "" && !*collectAll && *artifactIDs == "" {
@@ -263,6 +264,7 @@ type runConfig struct {
 	outDir, dataDir                       string
 	budget                                int64
 	force                                 bool
+	csv                                   bool // derive csv/ views from the JSON snapshots
 }
 
 // runCollection stores evidence in the case store, then exports and verifies the
@@ -367,7 +369,7 @@ func runCollection(ctx context.Context, cfg runConfig, sources []collector.Sourc
 	sum, exportErr := pkgexport.Write(context.Background(), pkgexport.Options{
 		Dir: cfg.outDir, CaseID: cfg.caseID, TenantID: cfg.tenant, HostID: hostID, Host: host, ToolVersion: version,
 		Profile: cfg.profile, Privilege: privilege, StartedAt: started, FinishedAt: time.Now().UTC(), Items: results,
-		GlobalNotes: notes, SelectedOnly: cfg.profile != string(collector.ProfileFull),
+		GlobalNotes: notes, SelectedOnly: cfg.profile != string(collector.ProfileFull), CSV: cfg.csv,
 		Open: func(c context.Context, sha string) (io.ReadCloser, error) {
 			return service.OpenVerified(c, scope, sha)
 		},

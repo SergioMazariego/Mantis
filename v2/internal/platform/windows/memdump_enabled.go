@@ -60,7 +60,7 @@ func dumpProcess(ctx context.Context, pid uint32) (io.ReadCloser, error) {
 		os.Remove(path)
 		return nil, err
 	}
-	return &tempFileReader{File: f, path: path, notes: map[string]string{"read_mode": "MiniDumpWriteDump full memory", "process": name, "pid": fmt.Sprint(pid),
+	return &tempFileReader{File: f, path: path, method: "MiniDumpWriteDump/full-memory", notes: map[string]string{"read_mode": "MiniDumpWriteDump full memory", "process": name, "pid": fmt.Sprint(pid),
 		"warning_detail": "full-memory dumps can contain credentials and keys of the dumped process", "acquired": time.Now().UTC().Format(time.RFC3339)}}, nil
 }
 

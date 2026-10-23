@@ -300,6 +300,9 @@ func inheritMeta(parent, child Meta) Meta {
 	if len(child.ActionTypes) == 0 {
 		child.ActionTypes = parent.ActionTypes
 	}
+	if child.DataVersion == 0 {
+		child.DataVersion = parent.DataVersion
+	}
 	child.Sensitive = child.Sensitive || parent.Sensitive
 	return child
 }

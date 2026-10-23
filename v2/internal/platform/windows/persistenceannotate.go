@@ -98,6 +98,33 @@ func startupApproved(root registry.Key, base, name string) (known, disabled bool
 	return true, b[0]&1 == 1 // 02/06 enabled, 03/07 disabled
 }
 
+const startupFolderApproved = `Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder`
+
+// startupFolderDisabled reports whether Task Manager's startup switch disabled a file in a Startup folder: the
+// all-users folder is governed by the machine's StartupApproved\StartupFolder, a user's folder by that user's.
+func startupFolderDisabled(dir, name string) bool {
+	low := strings.ToLower(dir)
+	if strings.HasPrefix(low, strings.ToLower(expandEnv(`%ProgramData%`))+`\`) {
+		known, dis := startupApproved(registry.LOCAL_MACHINE, startupFolderApproved, name)
+		return known && dis
+	}
+	for _, up := range userProfiles() {
+		if up.SID != "" && strings.HasPrefix(low, strings.ToLower(up.Path)+`\`) {
+			known, dis := startupApproved(registry.USERS, up.SID+`\`+startupFolderApproved, name)
+			return known && dis
+		}
+	}
+	return false
+}
+
+// wow6432Path turns a machine software path into its 32-bit (WOW6432Node) spelling.
+func wow6432Path(path string) string {
+	if len(path) > len(`Software\`) && strings.EqualFold(path[:len(`Software\`)], `Software\`) {
+		return path[:len(`Software\`)] + `WOW6432Node\` + path[len(`Software\`):]
+	}
+	return path
+}
+
 // annotateEntries fills key_time_utc, enabled and the descriptions for the entries it understands.
 func annotateEntries(entries []enrichEntry) {
 	tasksDir := windowsDir() + `\System32\Tasks`
@@ -150,6 +177,12 @@ func annotateEntries(entries []enrichEntry) {
 			}
 			e.KeyTimeUTC = keyTimeUTC(registry.LOCAL_MACHINE, `SYSTEM\CurrentControlSet\Services\`+e.Entry)
 		default:
+			if e.Category == "logon" && strings.Contains(strings.ToLower(e.Location), `\start menu\programs\startup`) {
+				if startupFolderDisabled(e.Location, e.Entry) {
+					e.Enabled = "disabled"
+				}
+				break
+			}
 			root, path, ok := splitRegistryLocation(e.Location)
 			if !ok {
 				break // folders and other non-registry locations

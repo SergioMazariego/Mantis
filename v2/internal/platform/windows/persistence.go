@@ -40,9 +40,11 @@ func persistenceSources() []collector.Source {
 				`Software\Microsoft\Windows NT\CurrentVersion\Windows`, `Software\Microsoft\Command Processor`} {
 				t = append(t, perLoadedUser(k, true, 2)...)
 			}
-			// user environment variables often carry tokens set with setx: names, types and sizes only
+			// user environment variables often carry tokens set with setx: names, types and sizes only, except
+			// UserInitMprLogonScript, a logon script that is persistence (its command is the evidence)
 			for _, et := range perLoadedUser("Environment", false, 0) {
 				et.NamesOnly = true
+				et.KeepData = []string{"UserInitMprLogonScript"}
 				t = append(t, et)
 			}
 			return t
